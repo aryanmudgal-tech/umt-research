@@ -1,0 +1,15 @@
+# Harness
+google-adk
+google-genai
+python-dotenv
+
+# Engineering tool layer (model-agnostic)
+numpy
+scipy
+sympy
+PyNiteFEA
+ezdxf
+concreteproperties
+
+# Dev
+pytest

@@ -1,0 +1,18 @@
+# Secrets — never commit
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Working outputs
+sandbox/*
+!sandbox/.gitkeep
+results/
+*.dxf.bak
+
+# OS/editor
+.DS_Store
