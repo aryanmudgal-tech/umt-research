@@ -135,8 +135,12 @@ Google's training + possible human review).
 
 ## Open questions
 
-1. ~~Billing~~ **RESOLVED:** Aryan links billing (Tier 1, $10 min prepay) + activates GDP premium benefits
-   from his Ultra sub → $100/mo Cloud credits cover API spend. See "Access route" above.
+1. ~~Billing~~ **DECIDED (2026-09-02): free tier.** Aryan has an AI Studio API key; team accepts
+   free-tier terms (content may be used for training) and skips paid billing for now. Consequence:
+   Flash-class models only (Pro likely unavailable on free tier post-Dec-2025) and lower rate limits —
+   run all roles on Gemini 3 Flash / 3.1 Flash-Lite; check live RPM/RPD in the AI Studio dashboard.
+   Upgrade path if Pro is ever needed: Tier 1 ($10 min prepay) + GDP premium activation from the Ultra
+   sub → $100/mo API credits.
 2. **Spike (Phase 0):** ADK 2.x graph Workflow vs 1.x SequentialAgent.
 3. **For the prof:** design code ACI 318-19 vs Eurocode; what the $50M covers.
 4. **Later (book phase):** whether Gemini File Search/context caching gives citation-granular grounding
