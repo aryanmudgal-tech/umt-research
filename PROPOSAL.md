@@ -1,7 +1,11 @@
-# The 25-Meter Agent — build proposal
+# The 25-Meter Agent — build proposal (rev. 2, Gemini stack)
 
 Agentic AI for Prof. Cemal Basaran's four-stage bridge-beam pipeline.
 Full research-backed version (with sources): https://claude.ai/code/artifact/972a9e56-4cb6-42bd-9015-79e104533776
+
+**Rev. 2 changes (2026-09-02):** (1) UMT book server dropped for now — may be added later, design preserved
+in the appendix; (2) build moves to the **Google Gemini ecosystem** — harness layer re-researched and rewritten
+(104-agent sweep, 24 claims verified 3-0, 1 refuted). The deterministic tool layer is model-agnostic and unchanged.
 
 ## Reading the professor's note
 
@@ -12,60 +16,133 @@ Simply supported, L = 25 m. Analytical checks: midspan deflection 5qL⁴/384EI, 
 
 ## The recommendation
 
-**One orchestrator agent (Claude Agent SDK) + deterministic Python tools + one adversarial
-verifier subagent + one MCP server for the UMT book.** Not a multi-agent crew.
+**One orchestrator agent on Google ADK + local deterministic Python tools + one context-isolated
+adversarial verifier + a hard verification gate written as plain Python.** Not a multi-agent crew.
 
-- Anthropic guidance (verified): fixed-sequence pipelines = prompt-chained workflow; multi-agent costs 3–10× tokens.
-- arXiv:2408.13406 (1,120 FEA trials): only Coder–Executor–Critic triad was reliable; redundant reviewers
-  *degraded* results; naive critics show 85–92% affirmation bias; executable-but-wrong code passes undetected.
-- MASSE (arXiv:2510.11004) + Automation-in-Construction RC-design paper (97% acc vs SAP2000): what works is
-  deterministic tools + structured handoffs + human-auditable step-by-step calcs.
-- The SDK gives the triad in one process: agent = coder, sandbox = executor, refutation-prompted subagent = critic.
-- LLM never does arithmetic. It orchestrates, derives, explains, cites.
+Architecture evidence (stack-agnostic, verified in sweep 1):
+- Fixed-sequence pipelines = coded workflow, not autonomous crew; multi-agent costs 3–10× tokens.
+- arXiv:2408.13406 (1,120 FEA trials): only Coder–Executor–Critic triad reliable; redundant reviewers *degraded*
+  results; naive critics show 85–92% affirmation bias; executable-but-wrong code passes undetected.
+- MASSE (arXiv:2510.11004) + Automation-in-Construction RC paper (97% acc vs SAP2000): deterministic tools +
+  structured handoffs + auditable step-by-step calcs are what works.
+- LLM never does arithmetic. It orchestrates, derives, explains.
 
-## Stages
+## The Gemini harness (sweep 2, verified 2026-09-02)
+
+**Framework: ADK (google/adk-python).** Apache-2.0, official Google, code-first Python, ~21.4k stars,
+roughly bi-weekly releases. Current: v2.8.0 (2.x line) with maintained 1.x branch (v1.39.1). Model-agnostic
+via LiteLLM (exit path from Gemini preserved). Decision needed via hands-on spike: **2.x graph Workflow API**
+(current; templated SequentialAgent/ParallelAgent/LoopAgent deprecated in 2.0) vs **1.x SequentialAgent**
+(battle-tested; verified verbatim: "not controlled by an AI model, and is deterministic in how it executes
+its sub-agents").
+
+**Three verified gotchas that shape the build:**
+1. **Tools run locally, never in Gemini's hosted code sandbox.** ADK Python enforces that built-in code
+   execution excludes ALL other tools in the same agent (400 INVALID_ARGUMENT) and built-in tools can't be
+   used in sub-agents at all. So: all four stage tools are local `FunctionTool`s in our own pinned venv —
+   which is where PyNiteFEA/ezdxf/concreteproperties live anyway. (Gemini 3's raw-API "tool combination"
+   preview may lift this someday; build on what ADK enforces today.)
+2. **A verifier inside the same SequentialAgent is NOT isolated** — all sub-agents share the same
+   InvocationContext and session state (verified verbatim from ADK docs). Fresh-context isolation requires an
+   **AgentTool-wrapped agent or a separate Runner with its own session**. That's how we implement the skeptic.
+3. **The hard gate is plain Python** in custom orchestration code (BaseAgent subclass / code between stages) —
+   ADK supports this pattern natively; the gate is an if-statement, not a prompt.
+
+**Inter-stage data:** small results via session state `output_key` / `tool_context.state`; large artifacts
+(FEM arrays, DXF) via files — output_key carries final response text, not binaries.
+
+**Models & pricing (verified live 2026-09-02, all "Preview"-suffixed names still in flux):**
+
+| Role | Model | Price in/out per 1M tok (≤200k ctx) |
+|------|-------|--------------------------------------|
+| Orchestrator | Gemini 3.1 Pro Preview | $2.00 / $12.00 |
+| Verifier (different model for independence) | Gemini 2.5 Pro | $1.25 / $10.00 |
+| Cheap tasks (rendering, formatting) | Gemini 3 Flash / 3.1 Flash-Lite | $0.50/$3.00 · $0.25/$1.50 |
+
+A full pipeline run is a few hundred k tokens ⇒ **dollars, not tens of dollars, per run** on paid Tier 1.
+
+**Free tier warning (verified):** AI Studio free tier needs no billing account BUT (a) free-tier content is
+used by Google to improve products, with possible human review — wrong for unpublished research; (b) Pro
+models reportedly no longer on the free tier post-Dec-2025 (secondary source; medium confidence); (c) live
+RPM/RPD limits only visible per-project in the AI Studio dashboard. **Use paid Tier 1** (link billing account);
+cost at our volumes is trivial and paid-tier content is not used for training.
+
+**Fallback harnesses (documented, not chosen):** Gemini CLI headless mode (`--output-format stream-json`,
+JSONL tool events; known issue #9281: exits on non-fatal tool errors) — subprocess-per-stage pattern;
+raw google-genai SDK automatic function calling (local execution by default, 10-call cap via
+`AutomaticFunctionCallingConfig`) — hand-rolled loop, no state/multi-agent machinery.
+
+## Stages (unchanged — model-agnostic)
 
 | # | Stage | Build | Cross-checks |
 |---|-------|-------|--------------|
-| 1 | Galerkin FEM | Agent-written NumPy Hermite-cubic 12-DOF 3D beam element (show the weak-form derivation — it's the point) | PyNite (verified: true 12-DOF Member3D, CI-tested vs textbooks, `pip install PyNiteFEA`); OpenSeesPy `elasticBeamColumn` backup; closed form 5qL⁴/384EI to machine precision |
-| 2 | RC design | Agent-written ACI 318-19 checks (Whitney block, C=T, tension-controlled φ, ρ limits, Vn=Vc+Vs, stirrups, serviceability) rendered as handcalcs/efficalc-style audit sheets. **Verified gap: no open-source ACI 318 library exists** (concreteproperties = AS/NZS only; structuralcodes = Eurocode only) | concreteproperties moment-curvature / ultimate capacity on the final section |
-| 3 | Cost | Quantity takeoff × WSDOT unit bid prices (rebar $1.50–2.00/lb, concrete $900–1,500/CY, +10% mobilization, +20% contingency) | Parametric: FHWA NBI 2025 avg $393/ft² deck (state range $128–1,306); TxDOT PS I-girder 51–100 ft bin $102.3/ft². **$50M reconciliation is a feature**: one 25 m span ≈ $1–3M ⇒ agent must surface the gap and ask what $50M covers. RSMeans = paid, no API — skip |
-| 4 | Drawings | ezdxf → AutoCAD-compatible DXF (R12–R2018). Trial etacad (v0.0.14) for beam long./transverse sections + rebar detailing + bar schedule; raw ezdxf fallback. GA/elevation sheets = custom ezdxf | Acceptance test: professor opens the DXF in AutoCAD |
+| 1 | Galerkin FEM | Agent-written NumPy Hermite-cubic 12-DOF 3D beam element (show the weak-form derivation) | PyNite (verified: true 12-DOF Member3D, CI-tested vs textbooks); OpenSeesPy backup; closed form 5qL⁴/384EI to machine precision |
+| 2 | RC design | Agent-written ACI 318-19 checks (Whitney block, C=T, tension-controlled φ, ρ limits, Vn=Vc+Vs, stirrups, serviceability) as handcalcs-style audit sheets. **Verified gap: no open-source ACI 318 library** (concreteproperties = AS/NZS; structuralcodes = Eurocode) | concreteproperties moment-curvature on final section |
+| 3 | Cost | Takeoff × WSDOT unit bid prices (rebar $1.50–2.00/lb, concrete $900–1,500/CY, +10% mobilization, +20% contingency) | Parametric: FHWA 2025 avg $393/ft² deck; TxDOT PS I-girder 51–100 ft bin $102.3/ft². One 25 m span ≈ $1–3M ⇒ agent must surface the $50M gap, not hide it. RSMeans = paid, no API — skip |
+| 4 | Drawings | ezdxf → AutoCAD-compatible DXF (R12–R2018). Trial etacad (v0.0.14) for beam sections + rebar detailing; raw ezdxf fallback. GA/elevation = custom ezdxf | Re-parse DXF, geometry must match design values; agent renders PNG preview and inspects it |
 
-## The UMT book (RAG)
+## Verification model (unchanged)
 
-- **Never rule-based PDF extraction** — benchmarks (arXiv:2410.09871) show all rule-based parsers garble equations.
-- Pipeline: PDF → page images → **vision-model transcription to LaTeX** (LemmaHead pattern, arXiv:2501.15797)
-  → **semantic-unit chunks** (one derivation / worked example each, never fixed-size) → index → MCP retrieval tool.
-- Serve via Claude **citations API** (page-level cites; scanned pages uncitable — transcribe first).
-- Warning (verified): naive RAG *degraded* a model 9.4%→2.3% in the closest precedent. Retrieval quality decides everything.
-  Fallback hardening: Confident RAG (N embedders, keep highest-confidence answer, ~+5–10%).
-- ⚠️ Book PDF is NOT yet on disk. ⚠️ Confirm Springer electronic-reproduction rights with the professor; keep corpus local.
+Three layers; green light comes from the bottom:
+1. **Deterministic checks** (code, no AI): closed-form matches, independent-library recompute, physics
+   invariants (equilibrium, K symmetric/PSD, rigid-body zero energy, convergence, units), ACI inequalities,
+   cost-band reconciliation, DXF read-back.
+2. **Skeptic subagent** (AgentTool / separate Runner, fresh session): receives problem + answers only, never
+   the solver's reasoning; prompted to refute; checks the specification (right problem modeled?). Run it on a
+   *different* model than the orchestrator for extra independence.
+3. **Hard gate** (plain Python between stages): machine-readable verdict required; orchestrator cannot argue
+   past an if-statement. Checks are a library; the check *plan* is composed per problem (invariants always;
+   reference solutions derived per case; manufactured solutions when no closed form exists).
 
-## Professional posture
+## Professional posture (unchanged)
 
-NSPE BER Case 24-2: AI use is fine; failing *Responsible Charge* over its output is not. Operate the agent as a
-supervised intern: auditable calc sheets, every number carries its cross-check + verifier verdict, reports labeled
-"preliminary / research & teaching / not a sealed design." Book corpus and any client data stay local / no-training API.
+NSPE BER Case 24-2: AI use fine; failing *Responsible Charge* over output is not. Agent = supervised intern:
+auditable calc sheets, every number carries its cross-check + verdict, reports labeled "preliminary /
+research & teaching / not a sealed design." Data privacy: paid API tier only (free tier content feeds
+Google's training + possible human review).
+
+## Interface
+
+- **Mode 1 (professor):** web chat page over the ADK backend — plain-language brief (or photo of a handwritten
+  note), stage-progress display with per-stage verifier verdicts, deliverables as downloads (report, calc
+  sheets, estimate, DXF).
+- **Mode 2 (research):** `run_pipeline brief.md` → results folder (report.pdf, drawings/*.dxf, estimate,
+  verification.json). Reproducible runs, batch evals, no babysitting.
+- Phase 1 has no UI: driven from terminal by Aryan; demos run live.
 
 ## Build order
 
-- **Phase 0** — repo, Agent SDK harness, sandbox; ingest book (blocked on PDF); MCP book tool + citation smoke test
-- **Phase 1** — FEM tool + verifier subagent (credibility milestone; demo first)
+- **Phase 0** — repo, venv, ADK harness spike (**decide 1.x SequentialAgent vs 2.x graph Workflow**),
+  Tier-1 billing setup, check live rate limits in AI Studio dashboard
+- **Phase 1** — FEM tool + isolated verifier + hard gate (credibility milestone; demo first)
 - **Phase 2** — ACI 318 calc sheets + concreteproperties cross-check
 - **Phase 3** — cost takeoff + parametric reconciliation
-- **Phase 4** — etacad spot-check; DXF beam sheets; custom GA/elevation
-- **Phase 5** — end-to-end run + eval set (beam cases with known answers, book Q&A with page-cite ground truth)
+- **Phase 4** — etacad spot-check; DXF sheets; AutoCAD acceptance test
+- **Phase 5** — end-to-end + eval suite (beam cases with known answers); targeted test of Gemini function-calling
+  reliability over 20+ turn loops (no published data survived verification — measure it ourselves)
 
-## Questions for the professor
+## Open questions
 
-1. Springer rights for local book ingestion + get the PDF.
-2. How much Galerkin derivation to exhibit in output (assumed: full, pedagogical).
-3. Design code: ACI 318-19 assumed — confirm (Eurocode would let structuralcodes carry weight).
-4. What the $50M covers (single structure / crossing / program) for Stage 3 framing.
+1. **For Aryan/prof:** OK to link a billing account for paid Tier 1 (privacy + Pro-model access)? Cost is
+   dollars/month at prototype volumes.
+2. **Spike (Phase 0):** ADK 2.x graph Workflow vs 1.x SequentialAgent.
+3. **For the prof:** design code ACI 318-19 vs Eurocode; what the $50M covers.
+4. **Later (book phase):** whether Gemini File Search/context caching gives citation-granular grounding
+   comparable to Anthropic's citations API — no claims survived verification; needs its own research pass
+   when the book returns to scope.
+
+## Appendix: deferred UMT book design (v1, kept for later)
+
+When the book returns to scope: PDF → page images → vision-model transcription to LaTeX (rule-based PDF
+extractors verifiably garble equations) → semantic-unit chunks (one derivation/example each) → local index →
+retrieval tool the orchestrator can query mid-task. One-time automated ingestion (~hours, ~$10–30); ask the
+professor for the LaTeX manuscript to skip transcription entirely; confirm Springer electronic-reproduction
+rights; corpus stays local.
 
 ## Research provenance
 
-Deep-research workflow, 2026-08-31: 110 agents, 6 angles, 27 sources fetched, 129 claims extracted,
-25 adversarially verified (3-vote refutation panels), 0 refuted. Claims for RC-libraries / cost-data / LLM+FEM
-angles are quote-verified from primary sources but were not tri-vote panelled (budget-dropped).
+Two deep-research sweeps: 2026-08-31 (110 agents, 27 sources, 25 claims verified 3-0, 0 refuted — architecture,
+FEM tools, RC gap, cost data, drawings, book RAG) and 2026-09-02 (104 agents, 22 sources, 25 claims panelled:
+24 confirmed, 1 refuted — Gemini/ADK harness; the refuted claim was "the Gemini 3 lineup is complete and all
+models are preview" — don't state lineup completeness). Quote-verified-but-not-panelled claims are labeled
+in the artifact.
