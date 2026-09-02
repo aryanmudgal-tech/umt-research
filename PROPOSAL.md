@@ -131,7 +131,13 @@ Google's training + possible human review).
   exact, interior interpolation isn't). ADK spike PASSED on gemini-3.5-flash in both patterns: single
   LlmAgent+FunctionTool and SequentialAgent with output_key state handoff. Model plan: 3.5-flash orchestrator
   (3.8-flash opportunistic), different-generation Flash for verifier, flash-lite for cheap tasks.
-- **Phase 1** — FEM tool + isolated verifier + hard gate (credibility milestone; demo first)
+- **Phase 1 — DONE (2026-09-02).** General 12-DOF Galerkin FEM solver (`tools/fem/`: solver, SymPy derivation
+  doc, closed-form library, PyNite cross-check, physics invariants; 39 tests green incl. adversarial suite —
+  review caught a real element-numbering bug in the cross-check). ADK harness (`agent/`): orchestrator
+  (3.8→3.5-flash fallback chain, exercised live), verifier on separate Runner + different model generation
+  (gemini-3-flash-preview), plain-Python deterministic gate, Mode-2 CLI `agent/run_phase1.py`. Live run:
+  brief → model dict → FEM → 9/9 deterministic checks (worst residual 1.7e-15) → verifier did not refute →
+  **GATE PASS** → `results/phase1_report.md` with full Galerkin derivation. Demo-ready for the professor.
 - **Phase 2** — ACI 318 calc sheets + concreteproperties cross-check
 - **Phase 3** — cost takeoff + parametric reconciliation
 - **Phase 4** — etacad spot-check; DXF sheets; AutoCAD acceptance test
