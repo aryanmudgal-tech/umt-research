@@ -67,10 +67,22 @@ models reportedly no longer on the free tier post-Dec-2025 (secondary source; me
 RPM/RPD limits only visible per-project in the AI Studio dashboard. **Use paid Tier 1** (link billing account);
 cost at our volumes is trivial and paid-tier content is not used for training.
 
+**Access route (RESOLVED 2026-09-02, verified 3-0):** Aryan's Google AI Ultra subscription does NOT cover
+Gemini API usage — Google states plan benefits "apply only within the Google AI Studio web interface"; API-key
+use "is billed and managed separately." BUT since Jan 27 2026, Ultra includes Google Developer Program premium
+benefits at no extra cost = **$100/month in Google Cloud credits usable toward the Gemini API**. Setup:
+(1) AI Studio API key + link billing, prepay min $10 (Tier 1); (2) activate GDP premium benefits at
+developers.google.com (requires GCP project + Cloud Billing enabled; prepay balance > $0 to activate
+promotional credits). Net effect: the $100/mo credit should cover the pipeline's entire token spend, on
+paid-tier privacy terms. Sources: ai.google.dev/gemini-api/docs/google-ai-plans, /docs/billing,
+blog.google GDP-premium announcement.
+
 **Fallback harnesses (documented, not chosen):** Gemini CLI headless mode (`--output-format stream-json`,
-JSONL tool events; known issue #9281: exits on non-fatal tool errors) — subprocess-per-stage pattern;
-raw google-genai SDK automatic function calling (local execution by default, 10-call cap via
-`AutomaticFunctionCallingConfig`) — hand-rolled loop, no state/multi-agent machinery.
+JSONL tool events; known issue #9281: exits on non-fatal tool errors) — subprocess-per-stage pattern; NOTE:
+the consumer-subscription OAuth login for Gemini CLI/Code Assist was shut off June 18 2026 (migrated to
+Antigravity), so the CLI runs on API keys too — Ultra quota can't drive it. Raw google-genai SDK automatic
+function calling (local execution by default, 10-call cap via `AutomaticFunctionCallingConfig`) — hand-rolled
+loop, no state/multi-agent machinery.
 
 ## Stages (unchanged — model-agnostic)
 
@@ -123,8 +135,8 @@ Google's training + possible human review).
 
 ## Open questions
 
-1. **For Aryan/prof:** OK to link a billing account for paid Tier 1 (privacy + Pro-model access)? Cost is
-   dollars/month at prototype volumes.
+1. ~~Billing~~ **RESOLVED:** Aryan links billing (Tier 1, $10 min prepay) + activates GDP premium benefits
+   from his Ultra sub → $100/mo Cloud credits cover API spend. See "Access route" above.
 2. **Spike (Phase 0):** ADK 2.x graph Workflow vs 1.x SequentialAgent.
 3. **For the prof:** design code ACI 318-19 vs Eurocode; what the $50M covers.
 4. **Later (book phase):** whether Gemini File Search/context caching gives citation-granular grounding
