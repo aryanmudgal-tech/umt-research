@@ -124,8 +124,13 @@ Google's training + possible human review).
 
 ## Build order
 
-- **Phase 0** — repo, venv, ADK harness spike (**decide 1.x SequentialAgent vs 2.x graph Workflow**),
-  Tier-1 billing setup, check live rate limits in AI Studio dashboard
+- **Phase 0 — DONE (2026-09-02).** Repo + venv (Python 3.12, ADK 2.8.0, PyNiteFEA 3.0). Empirical results:
+  free tier is Flash-only (Pro → 429 quota; 2.5-gen retired with 404). Working models on this key:
+  gemini-3.5-flash (reliable), 3.5/3.1-flash-lite, 3-flash-preview; 3.8/3.7-flash exist but 503 under load —
+  use with retry+fallback. Beam tool matches closed form at rel. error 0.0 (midspan node trick: nodal values
+  exact, interior interpolation isn't). ADK spike PASSED on gemini-3.5-flash in both patterns: single
+  LlmAgent+FunctionTool and SequentialAgent with output_key state handoff. Model plan: 3.5-flash orchestrator
+  (3.8-flash opportunistic), different-generation Flash for verifier, flash-lite for cheap tasks.
 - **Phase 1** — FEM tool + isolated verifier + hard gate (credibility milestone; demo first)
 - **Phase 2** — ACI 318 calc sheets + concreteproperties cross-check
 - **Phase 3** — cost takeoff + parametric reconciliation
