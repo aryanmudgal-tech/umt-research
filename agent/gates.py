@@ -8,6 +8,19 @@ from tools.fem.solver import assemble
 REL_TOL = 1e-6
 
 
+def _emit(type, title, /, **data):
+    """Publish a gate event if a tracer is around; never fail because of one.
+
+    The import is lazy so gates.py stays importable (and testable) on its own.
+    """
+    try:
+        from agent.trace import tracer
+
+        tracer.emit("gate", type, title, **data)
+    except Exception:
+        pass
+
+
 def detect_ss_udl(model: dict):
     """Params {"L","E","I","q"} when the model is a simply supported beam under
     a single uniform full-span y load, else None."""
@@ -109,10 +122,28 @@ def _pynite_check(model, result):
 def deterministic_gate(model_dict: dict, result: dict) -> dict:
     """Run every deterministic check; the gate passes only if all of them do."""
     checks = []
+
+    def record(check):
+        checks.append(check)
+        status = "PASS" if check["passed"] else "FAIL"
+        _emit("gate_check", f"{check['name']}: {status}", **check)
+
     for name, check in check_invariants(model_dict, result, assemble).items():
-        checks.append(
+        record(
             {"name": f"invariant_{name}", "passed": check["passed"], "detail": check["detail"]}
         )
-    checks.extend(_closed_form_checks(model_dict, result))
-    checks.append(_pynite_check(model_dict, result))
-    return {"passed": all(c["passed"] for c in checks), "checks": checks}
+    for check in _closed_form_checks(model_dict, result):
+        record(check)
+    record(_pynite_check(model_dict, result))
+
+    gate = {"passed": all(c["passed"] for c in checks), "checks": checks}
+    n_passed = sum(1 for c in checks if c["passed"])
+    _emit(
+        "gate_result",
+        f"deterministic gate: {'PASS' if gate['passed'] else 'FAIL'} "
+        f"({n_passed}/{len(checks)})",
+        passed=gate["passed"],
+        n_passed=n_passed,
+        n_total=len(checks),
+    )
+    return gate

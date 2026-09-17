@@ -2,6 +2,7 @@
 google-adk
 google-genai
 python-dotenv
+rich
 
 # Engineering tool layer (model-agnostic)
 numpy

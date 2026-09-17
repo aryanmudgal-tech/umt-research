@@ -16,6 +16,7 @@ from google.genai import types
 from agent.config import VERIFIER_MODELS, retryable_error
 from agent.orchestrator import closed_form_case
 from agent.recorder import to_plain
+from agent.trace import attach_observers, tracer
 from tools.fem.invariants import check_invariants
 from tools.fem.pynite_check import solve_with_pynite
 from tools.fem.solver import assemble
@@ -81,6 +82,21 @@ def extract_json(text: str):
     return None
 
 
+def _emit_verdict(verdict: dict) -> dict:
+    """Publish the verdict on the event bus, then hand it back unchanged."""
+    banner = "REFUTED" if verdict["refuted"] else "not refuted"
+    tracer.emit(
+        "verifier",
+        "verdict",
+        f"verifier verdict: {banner}",
+        refuted=verdict["refuted"],
+        checks=verdict["checks"],
+        reasoning=verdict["reasoning"],
+        model=verdict["model"],
+    )
+    return verdict
+
+
 async def _run_once(agent: LlmAgent, prompt: str) -> str:
     runner = InMemoryRunner(agent=agent, app_name="phase1_verifier")
     session = await runner.session_service.create_session(
@@ -124,47 +140,72 @@ def run_verifier(
 
     last_error = None
     for name in model_names:
-        agent = LlmAgent(
-            name="verifier", model=name, instruction=_INSTRUCTION, tools=tools
+        tracer.emit(
+            "verifier",
+            "model_attempt",
+            f"verifier trying {name}",
+            role="verifier",
+            model=name,
+        )
+        agent = attach_observers(
+            LlmAgent(
+                name="verifier", model=name, instruction=_INSTRUCTION, tools=tools
+            ),
+            role="verifier",
+            model=name,
         )
         try:
             text = asyncio.run(_run_once(agent, prompt))
         except Exception as exc:
             if retryable_error(exc):
                 print(f"[verifier] {name} unavailable ({exc}); trying next model")
+                tracer.emit(
+                    "verifier",
+                    "model_fallback",
+                    f"{name} unavailable; trying the next model",
+                    role="verifier",
+                    model=name,
+                    error=str(exc),
+                )
                 last_error = exc
                 continue
             raise
         verdict = extract_json(text)
         if not isinstance(verdict, dict) or "refuted" not in verdict:
-            return {
-                "refuted": True,
-                "checks": [
-                    {
-                        "name": "verdict_parse",
-                        "passed": False,
-                        "detail": "unparseable verdict",
-                    }
-                ],
-                "reasoning": text,
+            return _emit_verdict(
+                {
+                    "refuted": True,
+                    "checks": [
+                        {
+                            "name": "verdict_parse",
+                            "passed": False,
+                            "detail": "unparseable verdict",
+                        }
+                    ],
+                    "reasoning": text,
+                    "model": name,
+                }
+            )
+        return _emit_verdict(
+            {
+                "refuted": bool(verdict.get("refuted")),
+                "checks": list(verdict.get("checks") or []),
+                "reasoning": str(verdict.get("reasoning", "")),
                 "model": name,
             }
-        return {
-            "refuted": bool(verdict.get("refuted")),
-            "checks": list(verdict.get("checks") or []),
-            "reasoning": str(verdict.get("reasoning", "")),
-            "model": name,
-        }
+        )
 
-    return {
-        "refuted": True,
-        "checks": [
-            {
-                "name": "verifier_run",
-                "passed": False,
-                "detail": f"all verifier models failed: {last_error}",
-            }
-        ],
-        "reasoning": "verifier could not run",
-        "model": None,
-    }
+    return _emit_verdict(
+        {
+            "refuted": True,
+            "checks": [
+                {
+                    "name": "verifier_run",
+                    "passed": False,
+                    "detail": f"all verifier models failed: {last_error}",
+                }
+            ],
+            "reasoning": "verifier could not run",
+            "model": None,
+        }
+    )

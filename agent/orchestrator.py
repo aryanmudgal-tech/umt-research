@@ -3,6 +3,7 @@
 from google.adk.agents import LlmAgent
 
 from agent.recorder import solve_beam_3d
+from agent.trace import attach_observers
 from tools.fem.analytical import closed_form
 from tools.fem.derivation import galerkin_derivation_markdown
 
@@ -74,9 +75,10 @@ def closed_form_case(
 
 
 def build_orchestrator(model_name: str) -> LlmAgent:
-    return LlmAgent(
+    agent = LlmAgent(
         name="orchestrator",
         model=model_name,
         instruction=_instruction,
         tools=[solve_beam_3d, galerkin_derivation_markdown, closed_form_case],
     )
+    return attach_observers(agent, role="orchestrator", model=model_name)
