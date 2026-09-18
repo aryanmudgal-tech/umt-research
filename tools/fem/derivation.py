@@ -4,7 +4,25 @@ Deterministic teaching document: SymPy does the calculus, the text explains it.
 No LLM involved — every matrix in the output is computed by sympy at call time.
 """
 
+import re
+
 import sympy as sp
+
+_DISPLAY_MATH = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
+
+
+def _display_math_blocks(md: str) -> str:
+    """Give every $$...$$ equation its own bare $$ lines, content on one line.
+
+    Markdown reads a line starting with '+' or '-' as a list item, which splits
+    a multi-line equation and throws every later $$ out of step. This form
+    renders the same in GitHub, VS Code and KaTeX-based viewers.
+    """
+
+    def block(match):
+        return "\n\n$$\n" + " ".join(match.group(1).split()) + "\n$$\n\n"
+
+    return re.sub(r"\n{3,}", "\n\n", _DISPLAY_MATH.sub(block, md)).strip() + "\n"
 
 
 def _hermite_shape_functions(x, L):
@@ -67,7 +85,7 @@ def galerkin_derivation_markdown() -> str:
         f"$$N_{k + 1}(x) = {ltx(Nk)}$$" for k, Nk in enumerate(N)
     )
 
-    return f"""# Galerkin derivation of the 3D Euler-Bernoulli beam element
+    return _display_math_blocks(f"""# Galerkin derivation of the 3D Euler-Bernoulli beam element
 
 ## 1. Strong and weak form
 
@@ -148,7 +166,7 @@ blocks fill the 12x12:
 The result:
 
 $$\\mathbf{{k}}_{{12 \\times 12}} = {ltx(k12)}$$
-"""
+""")
 
 
 if __name__ == "__main__":

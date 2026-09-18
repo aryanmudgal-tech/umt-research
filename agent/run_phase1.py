@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import datetime
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -24,6 +25,7 @@ from google.genai import types  # noqa: E402
 
 from agent.config import ORCHESTRATOR_MODELS, VERIFIER_MODELS, load_api_key, retryable_error  # noqa: E402
 from agent.gates import deterministic_gate, detect_ss_udl  # noqa: E402
+from agent.jsonfmt import compact_json  # noqa: E402
 from agent.live_view import attach_live_view  # noqa: E402
 from agent.orchestrator import build_orchestrator  # noqa: E402
 from agent.recorder import recorder, to_plain  # noqa: E402
@@ -135,6 +137,25 @@ def _fmt(value, unit=""):
     return f"{value:.6e}{unit}" if value is not None else "n/a"
 
 
+def _cell(text) -> str:
+    """Table-cell safe text: a bare '|' would start a new column."""
+    return str(text).replace("|", "\\|").replace("\n", " ")
+
+
+def _nest(md: str, levels: int = 2) -> str:
+    """Push an embedded document's headings down so they sit under a report section."""
+    out, fenced = [], False
+    for line in md.splitlines():
+        if line.startswith("```") or line.strip() == "$$":
+            fenced = not fenced
+        elif not fenced:
+            line = re.sub(
+                r"^(#{1,6})(?=\s)", lambda m: "#" * min(6, len(m.group(1)) + levels), line
+            )
+        out.append(line)
+    return "\n".join(out)
+
+
 def _results_rows(model_dict, result):
     """(quantity, FEM, closed form, PyNite) rows; magnitudes in SI units."""
     case = detect_ss_udl(model_dict)
@@ -167,16 +188,16 @@ def write_report(brief_text, model_used, model_dict, result, det, verdict, passe
         "",
         "## Brief",
         "",
-        brief_text.strip(),
+        _nest(brief_text.strip()),
         "",
         "## Galerkin derivation",
         "",
-        galerkin_derivation_markdown().strip(),
+        _nest(galerkin_derivation_markdown().strip()),
         "",
         "## Model (as built by the orchestrator)",
         "",
         "```json",
-        json.dumps(to_plain(model_dict), indent=2),
+        compact_json(to_plain(model_dict), fold_after=10**9),
         "```",
         "",
         "## Results",
@@ -185,7 +206,7 @@ def write_report(brief_text, model_used, model_dict, result, det, verdict, passe
         "|---|---|---|---|",
     ]
     for name, fem, cf, py in _results_rows(model_dict, result):
-        lines.append(f"| {name} | {_fmt(fem)} | {_fmt(cf)} | {_fmt(py)} |")
+        lines.append(f"| {_cell(name)} | {_fmt(fem)} | {_fmt(cf)} | {_fmt(py)} |")
     lines += [
         "",
         "## Deterministic gate",
@@ -195,13 +216,13 @@ def write_report(brief_text, model_used, model_dict, result, det, verdict, passe
     ]
     for check in det["checks"]:
         status = "PASS" if check["passed"] else "FAIL"
-        lines.append(f"| {check['name']} | {status} | {check['detail']} |")
+        lines.append(f"| {_cell(check['name'])} | {status} | {_cell(check['detail'])} |")
     lines += [
         "",
         "## Verifier verdict (verbatim)",
         "",
         "```json",
-        json.dumps(verdict, indent=2),
+        json.dumps(verdict, indent=2, ensure_ascii=False),
         "```",
         "",
         f"## GATE: {banner}",
