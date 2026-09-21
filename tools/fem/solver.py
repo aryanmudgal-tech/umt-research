@@ -251,22 +251,31 @@ def _bending_peak(dofs, L, sign):
 
     # w'(a) = 0, written in the local a = s/L: a cubic's derivative is a quadratic
     chord = 6.0 * (w2 - w1) / L  # six times the slope of the element's chord
-    A = 3.0 * (t1 + t2) - chord
-    B = chord - 4.0 * t1 - 2.0 * t2
-    C = t1
-    if A == 0.0:
-        roots = [] if B == 0.0 else [-C / B]
-    else:
-        discriminant = B * B - 4.0 * A * C
-        if discriminant < 0.0:
-            return peak
-        root = math.sqrt(discriminant)
-        roots = [(-B + root) / (2.0 * A), (-B - root) / (2.0 * A)]
-
-    for a in roots:
+    for a in _quadratic_roots(3.0 * (t1 + t2) - chord, chord - 4.0 * t1 - 2.0 * t2, t1):
         if _EDGE_MARGIN < a < 1.0 - _EDGE_MARGIN:
             peak = max(peak, abs(_hermite_deflection(a, L, w1, t1, w2, t2)))
     return peak
+
+
+def _quadratic_roots(A, B, C):
+    """Real roots of A*a^2 + B*a + C, keeping the small one.
+
+    A is three times the element cubic's leading coefficient, so it vanishes
+    wherever the element carries no shear - the constant-moment middle span of
+    a four-point bending test, say - and arithmetic leaves it a few ulp off
+    zero far more often than exactly zero. The textbook
+    (-B +/- sqrt(B^2 - 4AC)) / 2A then subtracts two numbers that agree to the
+    last bit and hands back 0.0 for the root that matters, so the peak between
+    the nodes is lost in precisely the case this module exists to catch.
+    Taking one root from the roots' sum and the other from their product keeps
+    both: neither expression ever cancels.
+    """
+    discriminant = B * B - 4.0 * A * C
+    if discriminant < 0.0:
+        return []
+    root = math.sqrt(discriminant)
+    q = -0.5 * (B + root if B >= 0.0 else B - root)  # the larger root times A
+    return ([C / q] if q != 0.0 else []) + ([q / A] if A != 0.0 else [])
 
 
 def _deflection_peaks(model, u, dof_map):

@@ -38,7 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from tools.fem.equation import solve_equation_beam  # noqa: E402
-from tools.fem.solver import solve_beam_3d  # noqa: E402
+from tools.fem.solver import _quadratic_roots, solve_beam_3d  # noqa: E402
 
 SPAN, E_VAL, I_VAL, Q_VAL = 25.0, 30e9, 0.005, -30e3
 
@@ -322,3 +322,85 @@ def test_a_coarse_3d_mesh_does_not_out_report_a_fine_one():
     coarse, fine = peaks
     assert coarse <= fine * (1 + 1e-3)
     assert coarse == pytest.approx(fine, rel=2e-3)
+
+
+# --------------------------------------- the element with no shear in it at all
+
+
+def four_point_midspan(P, L, a, EI):
+    """Midspan deflection under two loads P, each a from its own support."""
+    return P * a * (3 * L**2 - 4 * a**2) / (24 * EI)
+
+
+@pytest.mark.parametrize(
+    "direction, dof, second_moment, key",
+    [("y", "FY", IZ, "uy"), ("z", "FZ", IY, "uz")],
+    ids=["y-plane", "z-plane"],
+)
+def test_a_span_with_no_shear_in_it_still_reports_its_peak(direction, dof, second_moment, key):
+    """Four-point bending: the middle element's cubic term is zero, or nearly.
+
+    Between two equal loads the shear vanishes, so the element cubic degenerates
+    to a parabola and the quadratic whose roots locate the peak loses its
+    leading coefficient - not to exactly zero, which is easy, but to a few ulp
+    of it, which is not. Solved by the textbook formula the interior root comes
+    back as 0.0 and the peak at midspan is lost, leaving the deflection under
+    the load: the old nodal-only answer, 1.5 % low, in the one arrangement a
+    laboratory beam test is most likely to use. The loads sit at 7.9 m rather
+    than 8 m so the arithmetic does NOT cancel to exactly zero.
+    """
+    L, P, a = 24.0, 100e3, 7.9
+    model = beam_3d(
+        [0.0, a, L - a, L],
+        {"N0": PINNED, "N3": ROLLER},
+        points=[
+            {"node": "N1", "dof": dof, "value": -P},
+            {"node": "N2", "dof": dof, "value": -P},
+        ],
+    )
+    model["section"]["Iy"] = model["section"]["Iz"] = second_moment
+    result = solve_beam_3d(model)
+
+    exact = four_point_midspan(P, L, a, E_3D * second_moment)
+    under_the_load = max(abs(d[key]) for d in result["displacements"].values())
+
+    assert not any(abs(n["x"] - L / 2) < 1e-9 for n in model["nodes"])  # no node at midspan
+    assert result["max_abs"][key] == pytest.approx(exact, rel=1e-12)
+    assert under_the_load < 0.99 * exact  # what is lost when the root cancels away
+
+    # the equation path meets the same beam with the same answer
+    if direction == "y":
+        equation = dict(PRISMATIC)
+        equation["rhs"] = "0"
+        beam = {
+            "nodes": [{"id": f"N{k}", "x": x} for k, x in enumerate([0.0, a, L - a, L])],
+            "supports": {"N0": PINNED, "N3": ROLLER},
+            "point_loads": [
+                {"node": "N1", "dof": "FY", "value": -P},
+                {"node": "N2", "dof": "FY", "value": -P},
+            ],
+        }
+        equation["params"] = dict(PRISMATIC["params"], I=second_moment)
+        assert solve_equation_beam(beam, equation)["max_abs"]["v"] == pytest.approx(
+            exact, rel=1e-12
+        )
+
+
+def test_the_quadratic_keeps_the_root_that_cancellation_would_eat():
+    """A leading coefficient a few ulp off zero must not swallow the small root."""
+    B, C = -1.2276, 0.62442
+    # for a leading coefficient this small the root is -C/B to well past the
+    # last bit, so any answer that is not that one is the cancellation
+    expected = -C / B
+    for A in (0.0, 1e-18, -1e-18, 1e-16, -1e-16, 1e-12, -1e-12):
+        roots = _quadratic_roots(A, B, C)
+        assert any(r == pytest.approx(expected, rel=1e-9) for r in roots), (
+            f"A = {A!r} lost the root near {expected}: got {roots}"
+        )
+        assert len(roots) == (1 if A == 0.0 else 2)
+        for r in roots:  # and every root returned is a root
+            assert abs(A * r * r + B * r + C) <= 1e-12 * (abs(B * r) + abs(C))
+
+    assert _quadratic_roots(1.0, 0.0, 1.0) == []  # no real root
+    assert _quadratic_roots(0.0, 0.0, 3.0) == []  # a non-zero constant is never flat
+    assert sorted(_quadratic_roots(1.0, 0.0, -0.25)) == pytest.approx([-0.5, 0.5])
