@@ -11,19 +11,24 @@ nothing in the output is a typed-in textbook matrix.
 An equation whose coefficients are not polynomials in x has no element matrix
 in closed form, and the solver integrates it numerically instead. The document
 then says so, states the quadrature rule and its order, and prints no matrix,
-rather than showing a closed form that was never computed. See
-integration_method, which mirrors the solver's own choice.
+rather than showing a closed form that was never computed. integration_method
+mirrors the solver's own choice on this module's own parse of the spec, and
+_claimed_method then holds that mirror to what the solver actually decided, so
+that the worst a disagreement can cost is a closed form the reader does not
+get - never an exactness claim over numbers that were integrated.
 """
 
 import re
 
 import sympy as sp
 
-# The quadrature ORDER is the solver's to set, so it is imported rather than
-# restated here: a document quoting a different order than the one that ran
-# would be worse than one quoting none. The DECISION of which method applies
-# is re-derived below, see integration_method.
-from tools.fem.equation import QUADRATURE_POINTS
+# The quadrature ORDER is tools/fem/equation.py's to set, so it is read off
+# that module at call time rather than restated or bound at import: a document
+# quoting a different order than the one that ran would be worse than one
+# quoting none. The DECISION of which method applies is re-derived below
+# (see integration_method) and then checked against the solver's own
+# (see _claimed_method).
+from tools.fem import equation as equation_solver
 from tools.fem.safe_expr import ExpressionError, clean_label, parse_expression
 
 _DISPLAY_MATH = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
@@ -389,6 +394,43 @@ def integration_method(parsed: dict) -> tuple:
     return "symbolic", "every coefficient and the right-hand side is polynomial in $x$"
 
 
+def _claimed_method(spec: dict, parsed: dict) -> tuple:
+    """(method, why) this document is allowed to claim: never above the solver's.
+
+    integration_method mirrors the solver's rule, but it runs on THIS module's
+    parse of the spec, where x carries real=True. That is not cosmetic: sympy
+    folds Abs(x)**2 to x**2 for a real x while it is still being parsed, so the
+    mirror calls "symbolic" an equation the solver integrates numerically. The
+    solver also has a route to quadrature the mirror cannot see at all — a
+    polynomial spec whose symbolic integration raises. Either one would leave
+    this document printing a closed form nobody computed, next to a report
+    paragraph that says the run was numerical.
+
+    So the solver is asked, and only a DOWNGRADE to quadrature is taken from
+    the answer. The mirror stays: it is what makes a solver that wrongly went
+    symbolic show up as a document with no closed form in it, and
+    evals/test_quadrature.py holds the two to each other.
+
+    Args:
+        spec: the raw equation spec dict, as the solver parses it.
+        parsed: the dict validate_equation_spec returns for that spec.
+
+    Returns:
+        (method, reason) - "quadrature" whenever either side says so.
+    """
+    method, why = integration_method(parsed)
+    if method != "symbolic":
+        return method, why
+    try:
+        plan = equation_solver.integration_plan(spec)
+    except Exception:  # noqa: BLE001 - the solver refuses a spec this document took
+        return method, why
+    if plan["method"] == "symbolic":
+        return method, why
+    # the solver's reason already ends in "so ...", which this document supplies
+    return "quadrature", f"the solver reports that {plan['reason'].split(', so ')[0]}"
+
+
 def _element_forms(parsed, s, Le, xi):
     """Integrate k_e term by term and f_e over one element, in the local coord s.
 
@@ -466,7 +508,7 @@ def equation_derivation_markdown(spec: dict) -> str:
     s, xi = sp.symbols("s x_i", real=True)
     Le = sp.Symbol("L_e", positive=True)
 
-    method, why = integration_method(parsed)
+    method, why = _claimed_method(spec, parsed)
     terms = None
     if method == "symbolic":
         try:
@@ -513,7 +555,7 @@ def equation_derivation_markdown(spec: dict) -> str:
     ) or "| _(none)_ | |"
 
     if quadrature:
-        n = QUADRATURE_POINTS
+        n = equation_solver.QUADRATURE_POINTS
         evaluation = (
             f"**How these are evaluated: numerically, by {n}-point Gauss-Legendre "
             "quadrature.** The method is chosen by structure, not by a timer: "

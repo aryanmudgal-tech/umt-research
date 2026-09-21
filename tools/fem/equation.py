@@ -371,7 +371,7 @@ def _quadrature_terms(eq: ParsedEquation):
     return blocks
 
 
-def _quadrature_element(eq: ParsedEquation, points=QUADRATURE_POINTS):
+def _quadrature_element(eq: ParsedEquation, points=None):
     """Callable (L, x0) -> (k_e, f_e), integrated numerically and self-checked.
 
     Every element is integrated twice, at `points` and again at 2 * points, and
@@ -382,7 +382,13 @@ def _quadrature_element(eq: ParsedEquation, points=QUADRATURE_POINTS):
     case raises, naming the coefficient: a stiffness matrix nobody can tell is
     inaccurate is worse than an error. The matrix returned is the `points` one,
     which is the order the result reports.
+
+    The order defaults to QUADRATURE_POINTS read HERE, not bound as a default
+    argument: a default argument freezes the module constant at import time,
+    so raising or lowering it afterwards would change the order a result
+    claims without changing the order that ran. See _integration_record.
     """
+    points = QUADRATURE_POINTS if points is None else int(points)
     blocks = _quadrature_terms(eq)
 
     def evaluate(L, x0):
@@ -422,22 +428,16 @@ def _quadrature_element(eq: ParsedEquation, points=QUADRATURE_POINTS):
 
 # ----------------------------------------------------------- choosing between
 
-_INTEGRATION_CACHE = {}
+_INTEGRATION_CACHE = {}  # eq.key -> (method, reason); the ORDER is never cached
 
-_SYMBOLIC = {
-    "method": "symbolic",
-    "points": None,
-    "reason": "every coefficient and the right-hand side is a polynomial in x, "
-    "so sympy integrates each element entry exactly",
-}
+_SYMBOLIC_REASON = (
+    "every coefficient and the right-hand side is a polynomial in x, "
+    "so sympy integrates each element entry exactly"
+)
 
 
-def _quadrature_record(reason):
-    return {"method": "quadrature", "points": QUADRATURE_POINTS, "reason": reason}
-
-
-def _integration_record(eq: ParsedEquation) -> dict:
-    """Which method this equation's element integrals use, and why. Decided once.
+def _integration_choice(eq: ParsedEquation) -> tuple:
+    """(method, reason) for this equation's element integrals. Decided once.
 
     The choice is structural — see the module docstring. A polynomial spec is
     integrated symbolically; anything else goes straight to quadrature without
@@ -450,29 +450,47 @@ def _integration_record(eq: ParsedEquation) -> dict:
 
     loose = _non_polynomial(eq)
     if loose:
-        record = _quadrature_record(
+        choice = (
+            "quadrature",
             f"{loose[0]} is not polynomial in x, so the element integrals have no "
-            "closed form sympy can be relied on to finish"
+            "closed form sympy can be relied on to finish",
         )
     elif eq.free_symbols():
         # Symbolic work: the spec still carries unresolved parameters, so there
         # is nothing to evaluate numerically and nothing to solve either (see
         # _require_numeric). Only element_matrices gets this far.
-        record = _SYMBOLIC
+        choice = ("symbolic", _SYMBOLIC_REASON)
     else:
         try:
             _numeric_element(eq)(1.0, 0.0)  # flush out a printer or eval error now
         except Exception as exc:  # noqa: BLE001 - any failure at all means quadrature
-            record = _quadrature_record(
+            choice = (
+                "quadrature",
                 "every coefficient is polynomial in x, but symbolic integration "
                 f"failed ({type(exc).__name__}: {str(exc)[:160]}), so the element "
-                "integrals fall back to quadrature"
+                "integrals fall back to quadrature",
             )
         else:
-            record = _SYMBOLIC
+            choice = ("symbolic", _SYMBOLIC_REASON)
 
-    _INTEGRATION_CACHE[eq.key] = record
-    return record
+    _INTEGRATION_CACHE[eq.key] = choice
+    return choice
+
+
+def _integration_record(eq: ParsedEquation) -> dict:
+    """The record a result carries: {"method", "points", "reason"}.
+
+    A fresh dict every call, and the quadrature ORDER is read now rather than
+    cached with the choice, because the record is a claim about what will run:
+    _quadrature_element reads the same constant at the same moment, so the two
+    cannot drift apart even if QUADRATURE_POINTS is changed between solves.
+    """
+    method, reason = _integration_choice(eq)
+    return {
+        "method": method,
+        "points": None if method == "symbolic" else QUADRATURE_POINTS,
+        "reason": reason,
+    }
 
 
 def _element_evaluator(eq: ParsedEquation):

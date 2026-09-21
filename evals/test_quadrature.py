@@ -33,6 +33,7 @@ import sympy as sp
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from agent import run_phase1  # noqa: E402
 from tools.fem import equation as equation_module  # noqa: E402
 from tools.fem import mms  # noqa: E402
 from tools.fem.derivation import (  # noqa: E402
@@ -320,6 +321,170 @@ def test_mms_still_catches_a_wrong_element_matrix_on_the_symbolic_path(monkeypat
     result = mms.mms_check(beam(), PLAIN_BEAM, v_expr=POLYNOMIAL_V_STAR, refinements=(4, 8, 16))
 
     assert not result["passed"], result["detail"]
+
+
+# --------------------------------------------------------- the shapes sweep
+
+# Everything a professor might plausibly write into v4, including the two
+# spellings that provoked this work and three coefficients that come close to
+# zero on the span. The contract is narrow and absolute: an answer or a sentence,
+# in seconds, never a hang and never a traceback out of sympy or numpy.
+COEFFICIENT_SHAPES = [
+    ("constant", "E*I0"),
+    ("linear", "E*I0*(1 + x/L)"),
+    ("quadratic", "E*I0*(1 + x/L)**2"),
+    ("cubic", "E*I0*(1 + x/L)**3"),
+    ("sqrt", "E*I0*sqrt(1 + x/L)"),
+    ("**0.5", "E*I0*(1 + x/L)**0.5"),
+    ("**1.5", "E*I0*(1 + x/L)**1.5"),
+    ("exp", "E*I0*exp(x/L)"),
+    ("sin", "E*I0*(2 + sin(3*x/L))"),
+    ("log", "E*I0*log(2 + x/L)"),
+    ("reciprocal", "E*I0/(1 + x/L)"),
+    ("near-zero-polynomial", "E*I0*(1e-6 + (x/L - 0.5)**2)"),
+    ("near-zero-trig", "E*I0*(1e-4 + sin(pi*x/L)**2)"),
+    ("near-zero-gaussian", "E*I0*(1e-3 + exp(-20*(x/L - 0.5)**2))"),
+]
+
+
+@pytest.mark.parametrize("name, v4", COEFFICIENT_SHAPES, ids=[n for n, _ in COEFFICIENT_SHAPES])
+def test_every_coefficient_shape_answers_or_explains_itself_in_seconds(name, v4):
+    """No hang, and no exception the professor has to read a sympy traceback for.
+
+    An EquationError IS an acceptable outcome here - a coefficient too sharp for
+    the rule has to be refused - but it is the only acceptable failure, and the
+    time budget applies either way.
+    """
+    start = time.perf_counter()
+    try:
+        result = solve_equation_beam(beam(), taper(v4))
+    except EquationError as exc:
+        result, detail = None, str(exc)
+    else:
+        detail = None
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < SOLVE_BUDGET_S, f"{name} took {elapsed:.1f} s"
+    if result is None:
+        assert "v4" in detail or "coefficient" in detail, detail
+    else:
+        assert result["max_abs"]["v"] > 0
+        assert all(np.isfinite(p["v"]) for p in result["samples"])
+
+
+def test_the_sweep_exercises_both_integration_paths():
+    """Otherwise the sweep above could be a single code path wearing 14 hats."""
+    methods = {integration_plan(taper(v4))["method"] for _, v4 in COEFFICIENT_SHAPES}
+
+    assert methods == {"symbolic", "quadrature"}
+
+
+# ------------------------------------------------- the order, and reporting it
+
+
+@pytest.mark.parametrize("order", [6, 10, 24])
+def test_the_order_a_result_reports_is_the_order_that_actually_ran(monkeypatch, order):
+    """QUADRATURE_POINTS has to be one number, not two that can drift apart.
+
+    It was two: the record read the module constant when it was built, while the
+    rule itself had the constant frozen into a default argument at import time.
+    Changing the constant then moved the claim without moving the computation,
+    which is the one thing a record like this exists to prevent.
+    """
+    monkeypatch.setattr(equation_module, "QUADRATURE_POINTS", order)
+    spec = taper(SQRT)
+    length, x_left = SPAN / N_ELEM, SPAN / 2
+
+    record = integration_plan(spec)
+    assert record["points"] == order
+
+    eq = parse_spec(spec)
+    k_ran, f_ran = equation_module._element_evaluator(eq)(length, x_left)
+    terms, f_explicit = equation_module._quadrature_terms(eq)(length, x_left, order)
+
+    np.testing.assert_allclose(k_ran, sum(terms.values()), rtol=1e-15, atol=0)
+    np.testing.assert_allclose(f_ran, f_explicit, rtol=1e-15, atol=0)
+
+
+def test_an_under_resolved_rule_is_refused_rather_than_returned(monkeypatch):
+    """Drive the order down until the rule is not good enough, and it must say so.
+
+    Three points cannot integrate a square-root taper to 1 part in 1e10, and the
+    doubled-order self-check is what has to notice. The alternative - returning
+    the coarse matrix anyway - is the failure this whole path exists to avoid,
+    because the run would finish and the report would look normal.
+    """
+    monkeypatch.setattr(equation_module, "QUADRATURE_POINTS", 3)
+
+    with pytest.raises(EquationError) as exc:
+        solve_equation_beam(beam(), taper(SQRT))
+
+    message = str(exc.value)
+    assert "v4" in message
+    assert "3-point" in message and "6-point" in message
+
+
+def test_the_same_order_that_is_refused_low_is_accepted_high(monkeypatch):
+    """The self-check has to be a measurement, not a blanket refusal of low orders."""
+    monkeypatch.setattr(equation_module, "QUADRATURE_POINTS", 8)
+    result = solve_equation_beam(beam(), taper(SQRT))
+
+    assert result["integration"]["points"] == 8
+    assert result["max_abs"]["v"] > 0
+
+
+# ------------------------------------------------- the document cannot over-claim
+
+# Abs(x)**2 is a polynomial in x for a real x and is not one for a symbol with no
+# assumptions. tools/fem/derivation.py parses with real=True and the solver does
+# not, so sympy folded this rhs to a polynomial for the document while the solver
+# sent it to quadrature: the report then carried "16-point Gauss-Legendre
+# (numerical, not closed-form)" and, four lines below it, "evaluated
+# symbolically ... the matrices below are exact", with a closed-form k_e printed
+# under it that no solve had used. Only whitelisted functions, and it solves.
+ABS_LOAD = {
+    "label": "Load written with Abs",
+    "coeffs": {"v4": "E*I0", "v2": "0", "v1": "0", "v0": "0"},
+    "rhs": "q*(1 + Abs(x)**2/L**2)",
+    "params": {"E": E_VAL, "I0": I0_VAL, "L": SPAN, "q": Q_VAL},
+}
+
+
+def test_a_spec_the_two_parsers_read_differently_still_solves():
+    assert solve_equation_beam(beam(), ABS_LOAD)["max_abs"]["v"] > 0
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [PLAIN_BEAM, taper(POLY_TAPER), taper(SQRT), taper(POW_HALF), taper("E*I0*exp(x/L)"), ABS_LOAD],
+    ids=["plain", "poly-taper", "sqrt()", "**0.5", "exp", "abs-load"],
+)
+def test_no_surface_of_a_quadrature_run_says_symbolic(spec):
+    """The result, the derivation document and the report section, all three.
+
+    A document may say quadrature where the solver went symbolic - that only
+    costs a closed form nobody sees. The reverse is a lie about the numbers in
+    the report, so it is the direction pinned here.
+    """
+    result = solve_equation_beam(beam(), spec)
+    method = result["integration"]["method"]
+    document = equation_derivation_markdown(spec)
+    section = "\n".join(run_phase1._equation_section(spec, result))
+
+    assert method == integration_plan(spec)["method"]
+    if method != "quadrature":
+        return
+
+    # The record's "reason" is allowed to contain the word - "symbolic
+    # integration failed" is exactly what it should say when it does - so the
+    # claim being grepped is the method field and the two prose surfaces.
+    assert result["integration"]["method"] == "quadrature"
+    assert result["integration"]["points"] == QUADRATURE_POINTS
+    assert "quadrature" in document and "Gauss-Legendre" in document
+    for surface, text in (("document", document), ("report section", section)):
+        assert "evaluated: symbolically" not in text, surface
+        assert "symbolic (exact)" not in text, surface
+        assert "the matrices below are exact" not in text, surface
 
 
 # --------------------------------------------------------------- the document
