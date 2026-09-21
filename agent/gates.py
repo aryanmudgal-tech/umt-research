@@ -166,13 +166,34 @@ def _closed_form_checks(model, result):
             )
         ]
     ref = closed_form("ss_udl", **case)
+    # A node at midspan makes the Hermite deflection exact there. Without one the
+    # peak falls inside an element and carries the mesh's own O(h^4) error, which
+    # is an honest answer, not a defect: holding it to 1e-6 fails a correct solve.
+    xs = sorted(node["x"] for node in model["nodes"])
+    midspan = (xs[0] + xs[-1]) / 2
+    n_elem = _n_elements(model)
+    on_node = any(abs(x - midspan) <= 1e-9 * max(1.0, abs(midspan)) for x in xs)
+    defl_tol = REL_TOL if on_node else max(REL_TOL, 1.0 / n_elem**4)
+    why = (
+        ""
+        if on_node
+        else f"no node at midspan, so the peak is interpolated within an element "
+        f"and carries this {n_elem}-element mesh's own discretisation error"
+    )
     return [
-        _reference_check(name, fem, exact, REL_TOL)
-        for name, fem, exact in (
-            ("closed_form_midspan_deflection", result["max_abs"]["uy"], ref["max_deflection"]),
-            ("closed_form_max_moment", result["max_abs"]["Mz"], ref["max_moment"]),
-            ("closed_form_end_shear", result["max_abs"]["Vy"], ref["end_shear"]),
-        )
+        _reference_check(
+            "closed_form_midspan_deflection",
+            result["max_abs"]["uy"],
+            ref["max_deflection"],
+            defl_tol,
+            why,
+        ),
+        _reference_check(
+            "closed_form_max_moment", result["max_abs"]["Mz"], ref["max_moment"], REL_TOL
+        ),
+        _reference_check(
+            "closed_form_end_shear", result["max_abs"]["Vy"], ref["end_shear"], REL_TOL
+        ),
     ]
 
 

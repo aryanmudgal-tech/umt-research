@@ -191,8 +191,12 @@ def solve_beam_3d(model):
     diagrams = _diagrams(model, u, dof_map)
 
     max_abs = _deflection_peaks(model, u, dof_map)
+    # The peaks come from the stations where each force actually turns, not from
+    # the printed grid; the grid is kept in the running so a reported maximum can
+    # never fall below what it was before.
+    extrema = diagrams + _diagrams(model, u, dof_map, critical=True)
     for key in ("Mz", "My", "Vy", "Vz", "N", "T"):
-        max_abs[key] = max(abs(p[key]) for p in diagrams)
+        max_abs[key] = max(abs(p[key]) for p in extrema)
 
     total = _total_applied(model)
 
@@ -293,8 +297,29 @@ def _deflection_peaks(model, u, dof_map):
     return peaks
 
 
-def _diagrams(model, u, dof_map):
+def _critical_stations(L, f_end, wy1, by, wz1, bz):
+    """Stations where an internal force can peak: the ends, plus interior extrema.
+
+    dMz/ds = Vy and dMy/ds = -Vz, so a bending moment peaks exactly where its
+    shear vanishes, and each shear is a polynomial in s. An evenly spaced grid
+    lands there only by luck: on a span with no node at midspan the sampled
+    peak moment of a uniform load falls short by O(h^2), which is a reporting
+    artefact and not the solve's error - the moment inside an element is
+    recovered exactly from its end forces.
+    """
+    stations = [0.0, L]
+    for v_end, w1, slope in ((f_end[1], wy1, by), (f_end[2], wz1, bz)):
+        stations += _quadratic_roots(slope / 2.0, w1, v_end)  # shear zero: moment peak
+        if slope:
+            stations.append(-w1 / slope)  # the shear's own extremum
+    return sorted({s for s in stations if 0.0 <= s <= L})
+
+
+def _diagrams(model, u, dof_map, critical=False):
     """Sample internal forces along each element from end forces + element loads.
+
+    With critical=True the stations are the peaks themselves rather than an
+    evenly spaced grid, which is what max_abs is entitled to report.
 
     Section forces come from equilibrium of the element segment left of the cut:
     N and T positive in tension / positive twist, Vy = sum of +y forces on the
@@ -321,7 +346,12 @@ def _diagrams(model, u, dof_map):
         f_end = k_e @ u[idx] - f_eq  # nodal forces acting ON the element
 
         by, bz = (wy2 - wy1) / L, (wz2 - wz1) / L
-        for s in np.linspace(0.0, L, n_per):
+        stations = (
+            _critical_stations(L, f_end, wy1, by, wz1, bz)
+            if critical
+            else np.linspace(0.0, L, n_per)
+        )
+        for s in stations:
             Wy = wy1 * s + by * s**2 / 2  # resultant of w_y on [0, s]
             Wz = wz1 * s + bz * s**2 / 2
             My_wy = wy1 * s**2 / 2 + by * s**3 / 6  # its moment about the cut
