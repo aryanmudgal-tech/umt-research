@@ -6,6 +6,7 @@ PyNite's signed member dist load in 'FY'/'FZ' matches the model dict's
 convention (negative w = downward), verified against the SS-UDL closed form.
 """
 
+import numpy as np
 from Pynite import FEModel3D
 
 _DISP_KEYS = {
@@ -13,6 +14,12 @@ _DISP_KEYS = {
     "rx": "RX", "ry": "RY", "rz": "RZ",
 }
 _RXN_KEYS = ["FX", "FY", "FZ", "MX", "MY", "MZ"]
+
+# Points per member for PyNite's own deflected shape. The comparison it
+# feeds is quoted to a few significant figures, and a smooth field is flat at
+# its peak, so 101 points put the height within about 1e-4 of the member's own
+# extremum - far below the difference between two engines' interpolations.
+_MEMBER_POINTS = 101
 
 
 def _elements_of(model):
@@ -79,4 +86,35 @@ def solve_with_pynite(model: dict) -> dict:
                 if flag
             }
 
-    return {"displacements": displacements, "reactions": reactions}
+    return {
+        "displacements": displacements,
+        "reactions": reactions,
+        "max_abs": _member_peaks(m),
+    }
+
+
+def _member_peaks(m) -> dict:
+    """PyNite's own largest |uy| and |uz| ANYWHERE along the members.
+
+    tools.fem.solver reports the extremum of the whole deflected shape, so the
+    figure standing beside it must be the same quantity: PyNite's largest NODAL
+    deflection is a different number whenever the peak falls between two nodes,
+    and putting it in the same row would read as two engines disagreeing when
+    they are answering two different questions. The two interpolations are not
+    identical - PyNite adds the exact member-load shape where this solver
+    reports its Hermite cubic - so the row still compares two independent
+    engines and not one engine with itself.
+    """
+    peaks = {}
+    for key, direction in (("uy", "dy"), ("uz", "dz")):
+        peaks[key] = max(
+            (
+                # one sweep of the member, not the two that max_deflection and
+                # min_deflection would each walk separately. Row 0 of what
+                # comes back is the STATION along the member, not a deflection
+                float(np.max(np.abs(member.deflection_array(direction, _MEMBER_POINTS)[1])))
+                for member in m.members.values()
+            ),
+            default=0.0,
+        )
+    return peaks

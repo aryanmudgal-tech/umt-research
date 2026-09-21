@@ -38,6 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from tools.fem.equation import solve_equation_beam  # noqa: E402
+from agent.run_phase1 import _results_rows  # noqa: E402
 from tools.fem.solver import _quadratic_roots, solve_beam_3d  # noqa: E402
 
 SPAN, E_VAL, I_VAL, Q_VAL = 25.0, 30e9, 0.005, -30e3
@@ -404,3 +405,35 @@ def test_the_quadratic_keeps_the_root_that_cancellation_would_eat():
     assert _quadratic_roots(1.0, 0.0, 1.0) == []  # no real root
     assert _quadratic_roots(0.0, 0.0, 3.0) == []  # a non-zero constant is never flat
     assert sorted(_quadratic_roots(1.0, 0.0, -0.25)) == pytest.approx([-0.5, 0.5])
+
+
+# ------------------------------------------- what the professor's report says
+
+
+def test_the_report_row_names_and_compares_the_same_quantity():
+    """The row beside the headline number has to be the same question.
+
+    max_abs["uy"] is the peak of the whole deflected shape, so the row may no
+    longer call it the MIDSPAN deflection - on an odd mesh there is no node
+    there - and the PyNite column may no longer be PyNite's largest NODAL
+    deflection, which on this mesh is 2.5 % lower and would read as the two
+    engines disagreeing when they are answering two different questions.
+    """
+    L, q, n = 25.0, 30e3, 3  # odd, so the peak falls between two nodes
+    model = beam_3d(
+        [L * k / n for k in range(n + 1)],
+        {"N0": PINNED, f"N{n}": ROLLER},
+        dist=[{"element": "all", "direction": "y", "w1": -q, "w2": -q}],
+    )
+    result = solve_beam_3d(model)
+    rows = {name: (fem, exact, pynite) for name, fem, exact, pynite in _results_rows(model, result)}
+
+    assert "Midspan deflection (m)" not in rows
+    fem, exact, pynite = rows["Max deflection (m)"]
+    nodal = max(abs(d["uy"]) for d in result["displacements"].values())
+
+    assert fem == result["max_abs"]["uy"]
+    assert exact == pytest.approx(5 * q * L**4 / (384 * E_3D * IZ), rel=1e-12)
+    assert nodal < 0.9 * exact  # the nodes really are away from the peak here
+    assert pynite == pytest.approx(fem, rel=5e-3)  # both engines, both peaks
+    assert pynite > 0.99 * exact

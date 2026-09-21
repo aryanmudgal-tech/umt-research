@@ -202,11 +202,15 @@ def _results_rows(model_dict, result, equation=None):
         py = None
     py_defl = py_shear = None
     if py:
-        py_defl = max(abs(d["uy"]) for d in py["displacements"].values())
+        # PyNite's own along-member extremum, because max_abs["uy"] is the peak
+        # of the whole deflected shape and not merely of the nodes: a largest
+        # NODAL deflection in the next column would read as a disagreement
+        # between the two engines when it is a different question.
+        py_defl = (py.get("max_abs") or {}).get("uy")
         left = sorted(model_dict["nodes"], key=lambda n: n["x"])[0]["id"]
         py_shear = abs(py["reactions"].get(left, {}).get("FY", 0.0))
     return [
-        ("Midspan deflection (m)", result["max_abs"]["uy"], ref.get("max_deflection"), py_defl),
+        ("Max deflection (m)", result["max_abs"]["uy"], ref.get("max_deflection"), py_defl),
         ("Max bending moment (N*m)", result["max_abs"]["Mz"], ref.get("max_moment"), None),
         ("End shear (N)", result["max_abs"]["Vy"], ref.get("end_shear"), py_shear),
     ]
