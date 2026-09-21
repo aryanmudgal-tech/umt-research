@@ -6,13 +6,24 @@ equation_derivation_markdown(spec) for whatever equation the professor writes
 into an equations/*.json file.
 
 Deterministic: SymPy does the calculus, the text explains it. No LLM involved —
-every matrix in the output is computed by sympy at call time.
+nothing in the output is a typed-in textbook matrix.
+
+An equation whose coefficients are not polynomials in x has no element matrix
+in closed form, and the solver integrates it numerically instead. The document
+then says so, states the quadrature rule and its order, and prints no matrix,
+rather than showing a closed form that was never computed. See
+integration_method, which mirrors the solver's own choice.
 """
 
 import re
 
 import sympy as sp
 
+# The quadrature ORDER is the solver's to set, so it is imported rather than
+# restated here: a document quoting a different order than the one that ran
+# would be worse than one quoting none. The DECISION of which method applies
+# is re-derived below, see integration_method.
+from tools.fem.equation import QUADRATURE_POINTS
 from tools.fem.safe_expr import ExpressionError, clean_label, parse_expression
 
 _DISPLAY_MATH = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
@@ -331,17 +342,65 @@ def validate_equation_spec(spec: dict) -> dict:
     return {"label": label, "coeffs": parsed, "rhs": rhs, "params": clean_params, "x": x}
 
 
+def _element_pieces(parsed, s, Le, xi):
+    """The Hermite shape functions and this spec's coefficients in the local coord.
+
+    Nothing is integrated here: both halves of equation_derivation_markdown
+    need these, and only the symbolic half goes on to integrate them.
+    """
+    N = sp.Matrix(_hermite_shape_functions(s, Le))
+    sub = {parsed["x"]: xi + s}
+    a = {key: sp.expand(parsed["coeffs"][key].subs(sub)) for key in _COEFF_KEYS}
+    return N, a
+
+
+def _is_polynomial_in(expr, x) -> bool:
+    """True when expr is a polynomial in x; a constant counts, at degree zero."""
+    if x not in expr.free_symbols:
+        return True
+    try:
+        sp.Poly(expr, x)
+    except Exception:  # noqa: BLE001 - every sympy "not a polynomial" means the same here
+        return False
+    return True
+
+
+def integration_method(parsed: dict) -> tuple:
+    """("symbolic" | "quadrature", why) for a validated spec — see validate_equation_spec.
+
+    Mirrors the rule in tools/fem/equation.py, on the same expressions with the
+    same parameters substituted, so the document cannot claim a closed form the
+    solver never computed. The two are pinned to each other by
+    evals/test_quadrature.py rather than sharing code, for the same reason
+    validate_equation_spec does not share code with parse_spec.
+
+    Args:
+        parsed: the dict validate_equation_spec returns.
+
+    Returns:
+        (method, reason) — reason names the first field that forced quadrature.
+    """
+    subs = {sp.Symbol(name, real=True): value for name, value in parsed["params"].items()}
+    fields = [(f"coefficient {key!r}", parsed["coeffs"][key]) for key in _COEFF_KEYS]
+    fields.append(("the right-hand side", parsed["rhs"]))
+    for name, expr in fields:
+        if not _is_polynomial_in(expr.subs(subs), parsed["x"]):
+            return "quadrature", f"{name} is not polynomial in $x$"
+    return "symbolic", "every coefficient and the right-hand side is polynomial in $x$"
+
+
 def _element_forms(parsed, s, Le, xi):
     """Integrate k_e term by term and f_e over one element, in the local coord s.
 
     The spec is written in the global x, so x is replaced by x_i + s (x_i = the
     element's left node) before integrating; for x-independent coefficients
     that substitution is a no-op and the textbook matrices drop straight out.
+
+    Only safe for a spec integration_method calls "symbolic": sympy does not
+    return in any useful time on, say, a square-root taper.
     """
-    N = sp.Matrix(_hermite_shape_functions(s, Le))
+    N, a = _element_pieces(parsed, s, Le, xi)
     d1, d2 = N.diff(s), N.diff(s, 2)
-    sub = {parsed["x"]: xi + s}
-    a = {key: sp.expand(parsed["coeffs"][key].subs(sub)) for key in _COEFF_KEYS}
 
     integrands = {
         "v4": lambda: a["v4"] * d2 * d2.T,
@@ -357,7 +416,7 @@ def _element_forms(parsed, s, Le, xi):
         m = build()
         terms[key] = sp.Matrix(4, 4, lambda r, c: sp.factor(sp.integrate(m[r, c], (s, 0, Le))))
 
-    f = sp.expand(parsed["rhs"].subs(sub))
+    f = sp.expand(parsed["rhs"].subs({parsed["x"]: xi + s}))
     f_e = sp.Matrix(4, 1, lambda r, _c: sp.factor(sp.integrate(f * N[r], (s, 0, Le))))
     return N, a, terms, f_e
 
@@ -406,12 +465,35 @@ def equation_derivation_markdown(spec: dict) -> str:
     parsed = validate_equation_spec(spec)
     s, xi = sp.symbols("s x_i", real=True)
     Le = sp.Symbol("L_e", positive=True)
-    N, a, terms, f_e = _element_forms(parsed, s, Le, xi)
-    k_e = sp.expand(sum(terms.values(), sp.zeros(4, 4)))
+
+    method, why = integration_method(parsed)
+    terms = None
+    if method == "symbolic":
+        try:
+            N, a, terms, f_e = _element_forms(parsed, s, Le, xi)
+        except Exception as exc:  # noqa: BLE001 - mirrors the solver's own fallback
+            method, terms = "quadrature", None
+            why = (
+                "every coefficient is polynomial in $x$, but symbolic integration "
+                f"failed ({type(exc).__name__}: {str(exc)[:160]})"
+            )
+    if terms is None:
+        N, a = _element_pieces(parsed, s, Le, xi)
+    else:
+        k_e = sp.expand(sum(terms.values(), sp.zeros(4, 4)))
 
     ltx = sp.latex
     active = [key for key in _COEFF_KEYS if not a[key].is_zero]
     f_expr = sp.expand(parsed["rhs"].subs({parsed["x"]: xi + s}))
+    quadrature = method == "quadrature"
+    intro = (
+        "Every matrix below was integrated by sympy when this document was "
+        "generated - none of them is a typed-in textbook matrix."
+        if not quadrature
+        else "This equation is integrated numerically, so the element entries below "
+        "are described by the quadrature rule that produces them rather than "
+        "printed as closed forms - see section 4."
+    )
 
     coeff_rows = "\n".join(
         f"| {_TERM_NOTES[key][0]} | {_TERM_NOTES[key][1]} | "
@@ -430,11 +512,62 @@ def equation_derivation_markdown(spec: dict) -> str:
         f"| `{name}` | {value:g} |" for name, value in sorted(parsed["params"].items())
     ) or "| _(none)_ | |"
 
+    if quadrature:
+        n = QUADRATURE_POINTS
+        evaluation = (
+            f"**How these are evaluated: numerically, by {n}-point Gauss-Legendre "
+            "quadrature.** The method is chosen by structure, not by a timer: "
+            f"{why}, so these integrals have no closed form sympy can be relied on "
+            "to finish. No closed-form $\\mathbf{k}_e$ is printed below because "
+            "there is none to print. The solver evaluates every entry as a "
+            f"weighted sum over {n} points inside each element:\n"
+            "\n"
+            "$$\\mathbf{k}_e = \\frac{L_e}{2} \\sum_{g=1}^{" + str(n) + "} w_g "
+            "\\left( a_4 \\mathbf{N}''^T \\mathbf{N}'' - a_2 \\mathbf{N}'^T "
+            "\\mathbf{N}' + a_1 \\mathbf{N}^T \\mathbf{N}' + a_0 \\mathbf{N}^T "
+            "\\mathbf{N} \\right)_{s = s_g}$$\n"
+            "\n"
+            "$$\\mathbf{f}_e^T = \\frac{L_e}{2} \\sum_{g=1}^{" + str(n) + "} w_g "
+            "\\, f(x_i + s_g) \\, \\mathbf{N}^T(s_g), \\qquad "
+            "s_g = \\frac{L_e}{2} \\left( t_g + 1 \\right)$$\n"
+            "\n"
+            "where $t_g$ and $w_g$ are the Gauss-Legendre nodes and weights on "
+            f"$[-1, 1]$, and $f = {ltx(f_expr)}$ over the element.\n"
+            "\n"
+            "**The entries are therefore numerical, not closed-form.** An "
+            "$n$-point rule integrates a polynomial of degree $2n - 1$ exactly, "
+            "and the richest element integrand here is degree 6 in $s$, so "
+            f"$n = {n}$ reproduces any polynomial spec exactly with a wide margin "
+            "left over. For a spec that is not polynomial there is no exactness "
+            "to claim, so the solver checks each element instead: it repeats "
+            f"every integration at {2 * n} points and refuses the equation, "
+            "naming the coefficient, unless each entry agrees to 1 part in "
+            "$10^{10}$.\n"
+        )
+    else:
+        evaluation = (
+            f"**How these are evaluated: symbolically.** {why[0].upper() + why[1:]}, "
+            "so sympy integrates each entry in closed form when this document is "
+            "generated and the matrices below are exact:\n"
+            "\n"
+            f"$$\\mathbf{{k}}_e = {ltx(k_e)}$$\n"
+            "\n"
+            f"$$\\mathbf{{f}}_e^T = {ltx(f_e.T)}$$\n"
+            "\n"
+            f"with $f = {ltx(f_expr)}$ over the element.\n"
+        )
+
     term_blocks = []
     for key in active:
         _, sym, _, factor, factor_tex, textbook = _TERM_NOTES[key]
         block = f"**{sym} term.** {textbook}\n"
-        if parsed["x"] not in parsed["coeffs"][key].free_symbols:
+        if quadrature:
+            block += (
+                f"\nYour $a_{key[1]} = {ltx(a[key])}$ is integrated numerically, so "
+                "this term has no closed-form matrix of its own to show; it reaches "
+                "$\\mathbf{k}_e$ through the quadrature sum of section 4.\n"
+            )
+        elif parsed["x"] not in parsed["coeffs"][key].free_symbols:
             scale = factor(a[key], Le)
             core = sp.expand(terms[key] / scale)
             block += (
@@ -452,8 +585,7 @@ def equation_derivation_markdown(spec: dict) -> str:
 
     return _display_math_blocks(f"""# Galerkin derivation: {parsed["label"]}
 
-Derived from your equation spec. Every matrix below was integrated by sympy
-when this document was generated - none of them is a typed-in textbook matrix.
+Derived from your equation spec. {intro}
 
 ## 1. The equation you gave
 
@@ -533,14 +665,7 @@ $$\\mathbf{{k}}_e = \\int_0^{{L_e}} \\left( a_4 \\mathbf{{N}}''^T \\mathbf{{N}}'
 
 $$\\mathbf{{f}}_e = \\int_0^{{L_e}} f \\, \\mathbf{{N}}^T ds$$
 
-For your equation sympy integrates these to
-
-$$\\mathbf{{k}}_e = {ltx(k_e)}$$
-
-$$\\mathbf{{f}}_e^T = {ltx(f_e.T)}$$
-
-with $f = {ltx(f_expr)}$ over the element.
-
+{evaluation}
 ## 5. What each term reduces to
 
 {chr(10).join(term_blocks)}

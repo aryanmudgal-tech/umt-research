@@ -2,7 +2,7 @@
 
 The governing equation is **data, not code**. Nothing in this pipeline has the
 Euler-Bernoulli stiffness matrix typed into it: the element matrices are
-integrated symbolically from whatever equation one of these files describes.
+integrated at run time from whatever equation one of these files describes.
 To change the physics, edit a JSON file here — or copy one and write your own.
 
 | file | equation it describes |
@@ -76,13 +76,34 @@ you declared `I` is an error naming the missing parameter, not a silent zero.
 Note that `E` and `I` mean *your* parameters, not Euler's number and the
 imaginary unit.
 
-One practical limit: the element matrices are integrated symbolically, and
-sympy is fast on polynomials in `x` and slow on some other forms. A polynomial
-taper such as `"E*I0*(1 + 2*(1 - 2*x/L)**2)"` integrates in well under a
-second; a coefficient under a square root, such as `"E*I0*sqrt(1 + x/L)"`, can
-take minutes or longer with no sign of progress. Prefer a polynomial fit of the
-stiffness you want — for a second moment of area it is an approximation either
-way.
+### How your coefficients get integrated
+
+You do not have to choose this, but you should know which one you got, because
+the report and the derivation both say so.
+
+If every coefficient and the `rhs` is a **polynomial in `x`** — a constant, a
+linear taper, `"E*I0*(1 + 2*(1 - 2*x/L)**2)"` — the element matrices are
+integrated **symbolically**. Those entries are exact closed forms, and the
+derivation document prints them.
+
+Anything else — `"E*I0*sqrt(1 + x/L)"`, an exponential, a sine — is integrated
+by **16-point Gauss-Legendre quadrature**, in the same fraction of a second.
+Sixteen points integrate a polynomial of degree 31 exactly, which covers every
+polynomial spec with room to spare; for a coefficient that is not polynomial
+there is no exactness to claim, so each element is integrated again at 32
+points and the equation is refused, naming the coefficient, unless the two
+agree to 1 part in 10¹⁰. Those entries are numbers, not closed forms, and the
+derivation document says so rather than printing a matrix it does not have.
+
+Note that `"E*I0*sqrt(1 + x/L)"` and `"E*I0*(1 + x/L)**0.5"` are the same
+equation and are treated identically — a fractional power is not a polynomial
+however you spell it.
+
+The choice is made from the *shape* of your expression, never from a timer, so
+it is the same on every machine and every run. What it cannot do is rescue a
+coefficient with a corner, a pole or an infinite slope inside an element: that
+is the case the doubled-order check refuses. Move the feature onto a node by
+refining the mesh, or write the coefficient as a smoother expression in `x`.
 
 A complete file looks like this — this is `euler_bernoulli.json`:
 
@@ -208,8 +229,10 @@ print(equation_derivation_markdown(spec))
 
 It prints the residual with your coefficients substituted, the weak form and
 the boundary terms each integration by parts left behind, the Hermite shape
-functions, and the element matrix and load vector sympy integrated for *your*
-equation — plus a note on which textbook matrix each term reduces to. If the
+functions, and the element matrix and load vector integrated for *your*
+equation — with the integration method named, and the matrices themselves
+where they have a closed form — plus a note on which textbook matrix each
+term reduces to. If the
 residual at the top is not the equation you intended, stop there.
 
 A malformed file raises a `ValueError` naming the field, so a typo fails

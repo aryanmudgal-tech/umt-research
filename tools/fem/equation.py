@@ -37,6 +37,18 @@ span, that matrix is indefinite: the linear system still has one unique
 solution, but it is an unstable equilibrium and it points the wrong way, so a
 beam under a downward load comes back deflecting upward. Those systems are
 refused here rather than reported. See _solve_free.
+
+How the element integrals are computed is decided by the STRUCTURE of the spec,
+never by a timeout: a timeout needs a signal handler or a subprocess, and this
+module runs as an agent tool that may not be on the main thread. A spec whose
+coefficients and rhs are all polynomials in x is integrated symbolically, which
+is exact and leaves the derivation document a closed form. Anything else — a
+square-root taper, an exponential, a trigonometric coefficient — is integrated
+with fixed-order Gauss-Legendre quadrature, which costs the same few
+microseconds whatever the coefficient is, rather than sending sympy into an
+integral it may never finish. Which of the two ran, and why, is reported in the
+result's "integration" record: a numerically integrated element must never be
+able to pass itself off as exact. See _element_rule.
 """
 
 import math
@@ -261,8 +273,253 @@ def _numeric_element(eq: ParsedEquation):
     return evaluate
 
 
+# --------------------------------------------------------------- quadrature
+
+# Gauss-Legendre points per element when a coefficient is not a polynomial.
+# An n-point rule is exact for a polynomial of degree 2n-1. Over one element
+# the integrands are the Hermite cubics against each other: the v4 integrand
+# (N'')^T N'' is degree 2 in xi, the v2 integrand N'^T N' is degree 4, the v1
+# integrand N^T N' is degree 5 and the v0 integrand N^T N is degree 6 — so
+# degree 6 is the worst case a CONSTANT coefficient produces, and the load
+# term f N^T is degree 3. 16 points are exact to degree 31, which still leaves
+# room for a polynomial coefficient of degree 25 riding on top of the worst of
+# those: every polynomial spec this module would otherwise integrate
+# symbolically is reproduced exactly, with room to spare, for 16 evaluations
+# of each coefficient per element.
+QUADRATURE_POINTS = 16
+
+# The doubled-order self-check must agree to this, relative to the largest
+# entry of the same term. Gauss-Legendre converges far past it on a smooth
+# coefficient; one with a corner, a pole or an endpoint singularity does not.
+QUADRATURE_TOL = 1e-10
+
+_FIELD_NAMES = {**{k: f"coefficient {k!r}" for k in COEFF_KEYS}, "rhs": "the right-hand side"}
+
+
+@lru_cache(maxsize=None)
+def _leggauss(n):
+    """(nodes, weights) of the n-point Gauss-Legendre rule on [-1, 1]."""
+    return np.polynomial.legendre.leggauss(n)
+
+
+def _is_polynomial_in_x(expr) -> bool:
+    """True when expr is a polynomial in x; a constant counts, at degree zero."""
+    if X not in expr.free_symbols:
+        return True
+    try:
+        sp.Poly(expr, X)
+    except Exception:
+        # sympy signals "not a polynomial in this generator" through several
+        # exception types (PolynomialError, GeneratorsNeeded, CoercionFailed).
+        # They all mean the same thing here, and none of them is worth telling
+        # the professor about: the answer is simply "integrate it numerically".
+        return False
+    return True
+
+
+def _non_polynomial(eq: ParsedEquation) -> list:
+    """Spec fields that are not polynomials in x, named as the spec names them."""
+    fields = [(key, eq.coeffs[key]) for key in COEFF_KEYS] + [("rhs", eq.rhs)]
+    return [_FIELD_NAMES[key] for key, expr in fields if not _is_polynomial_in_x(expr)]
+
+
+def _along_x(expr):
+    """expr as a callable x -> ndarray, broadcasting a constant over the points."""
+    fn = sp.lambdify(X, expr, "numpy")
+
+    def evaluate(x):
+        return np.broadcast_to(np.asarray(fn(x), dtype=float), np.shape(x))
+
+    return evaluate
+
+
+def _shape_values(fn, xi, L):
+    """The four Hermite values at every quadrature point, as a (4, n) array.
+
+    lambdify returns a bare float for a shape function that does not depend on
+    xi, so each row is broadcast before stacking.
+    """
+    return np.array(
+        [np.broadcast_to(np.asarray(row, dtype=float), xi.shape) for row in fn(xi, L)]
+    )
+
+
+def _quadrature_terms(eq: ParsedEquation):
+    """Callable (L, x0, n) -> (per-coefficient 4x4 blocks, f_e) by n-point quadrature."""
+    a_fn = {key: _along_x(eq.coeffs[key]) for key in COEFF_KEYS}
+    f_fn = _along_x(eq.rhs)
+    N_fn, N1_fn, N2_fn, _ = _hermite_numeric()
+
+    def blocks(L, x0, n):
+        nodes, weights = _leggauss(n)
+        xi = 0.5 * L * (nodes + 1.0)  # element-local coordinate, 0 <= xi <= L
+        weight = 0.5 * L * weights  # dxi = (L/2) dt maps [-1, 1] onto [0, L]
+        x = x0 + xi  # the coefficients are written in the global x
+        N = _shape_values(N_fn, xi, L)
+        N1 = _shape_values(N1_fn, xi, L)
+        N2 = _shape_values(N2_fn, xi, L)
+        a = {key: a_fn[key](x) for key in COEFF_KEYS}
+        terms = {
+            # the same four integrands as _symbolic_element, sign for sign
+            "v4": (N2 * (weight * a["v4"])) @ N2.T,
+            "v2": -(N1 * (weight * a["v2"])) @ N1.T,
+            "v1": (N * (weight * a["v1"])) @ N1.T,
+            "v0": (N * (weight * a["v0"])) @ N.T,
+        }
+        return terms, N @ (weight * f_fn(x))
+
+    return blocks
+
+
+def _quadrature_element(eq: ParsedEquation, points=QUADRATURE_POINTS):
+    """Callable (L, x0) -> (k_e, f_e), integrated numerically and self-checked.
+
+    Every element is integrated twice, at `points` and again at 2 * points, and
+    the two are compared term by term. Gauss-Legendre converges very fast on a
+    coefficient that is smooth across the element and slowly on one with a
+    corner, a pole or an endpoint singularity inside it, so a term that has not
+    settled by the doubled order was not accurate at the lower one either. That
+    case raises, naming the coefficient: a stiffness matrix nobody can tell is
+    inaccurate is worse than an error. The matrix returned is the `points` one,
+    which is the order the result reports.
+    """
+    blocks = _quadrature_terms(eq)
+
+    def evaluate(L, x0):
+        L, x0 = float(L), float(x0)
+        coarse_k, coarse_f = blocks(L, x0, points)
+        fine_k, fine_f = blocks(L, x0, 2 * points)
+
+        for key in (*COEFF_KEYS, "rhs"):
+            coarse = coarse_f if key == "rhs" else coarse_k[key]
+            fine = fine_f if key == "rhs" else fine_k[key]
+            scale = float(max(np.max(np.abs(coarse)), np.max(np.abs(fine))))
+            if scale == 0.0:  # the term is absent, so there is nothing to settle
+                continue
+            # written so a nan difference fails the test rather than passing it
+            error = float(np.max(np.abs(fine - coarse)) / scale)
+            if not error <= QUADRATURE_TOL:
+                raise EquationError(
+                    f"{_FIELD_NAMES[key]} cannot be integrated reliably over the "
+                    f"element of length {L:g} starting at x = {x0:g}: a "
+                    f"{points}-point Gauss-Legendre rule and a {2 * points}-point "
+                    f"rule differ by {error:.3e} relative, against a required "
+                    f"{QUADRATURE_TOL:g}. Fixed-order quadrature converges only "
+                    "on a coefficient that is smooth across the element, so this "
+                    "one most likely has a corner, a pole or an endpoint "
+                    "singularity inside it. Refine the mesh so that feature lands "
+                    "on a node, or write the coefficient as a smoother expression "
+                    "in x."
+                )
+
+        k_e = np.zeros((4, 4))
+        for term in coarse_k.values():
+            k_e += term
+        return k_e, coarse_f
+
+    return evaluate
+
+
+# ----------------------------------------------------------- choosing between
+
+_INTEGRATION_CACHE = {}
+
+_SYMBOLIC = {
+    "method": "symbolic",
+    "points": None,
+    "reason": "every coefficient and the right-hand side is a polynomial in x, "
+    "so sympy integrates each element entry exactly",
+}
+
+
+def _quadrature_record(reason):
+    return {"method": "quadrature", "points": QUADRATURE_POINTS, "reason": reason}
+
+
+def _integration_record(eq: ParsedEquation) -> dict:
+    """Which method this equation's element integrals use, and why. Decided once.
+
+    The choice is structural — see the module docstring. A polynomial spec is
+    integrated symbolically; anything else goes straight to quadrature without
+    sympy being asked for an integral it may never return from. A symbolic
+    attempt that raises for ANY reason falls back to quadrature too, so a sympy
+    internal error like 'Non-suitable parameters' cannot reach the caller.
+    """
+    if eq.key in _INTEGRATION_CACHE:
+        return _INTEGRATION_CACHE[eq.key]
+
+    loose = _non_polynomial(eq)
+    if loose:
+        record = _quadrature_record(
+            f"{loose[0]} is not polynomial in x, so the element integrals have no "
+            "closed form sympy can be relied on to finish"
+        )
+    elif eq.free_symbols():
+        # Symbolic work: the spec still carries unresolved parameters, so there
+        # is nothing to evaluate numerically and nothing to solve either (see
+        # _require_numeric). Only element_matrices gets this far.
+        record = _SYMBOLIC
+    else:
+        try:
+            _numeric_element(eq)(1.0, 0.0)  # flush out a printer or eval error now
+        except Exception as exc:  # noqa: BLE001 - any failure at all means quadrature
+            record = _quadrature_record(
+                "every coefficient is polynomial in x, but symbolic integration "
+                f"failed ({type(exc).__name__}: {str(exc)[:160]}), so the element "
+                "integrals fall back to quadrature"
+            )
+        else:
+            record = _SYMBOLIC
+
+    _INTEGRATION_CACHE[eq.key] = record
+    return record
+
+
+def _element_evaluator(eq: ParsedEquation):
+    """The callable (L, x0) -> (k_e, f_e) this equation's assembly uses.
+
+    The one seam every assembly goes through, whichever method was chosen, and
+    so the one place to bug in order to test that a wrong element matrix is
+    caught (evals/test_mms.py does exactly that). Nothing is cached here: both
+    branches cache what is expensive — the symbolic integration and the
+    lambdified matrices — and a cached callable would quietly outlive a test's
+    monkeypatch.
+    """
+    if _integration_record(eq)["method"] == "symbolic":
+        return _numeric_element(eq)
+    return _quadrature_element(eq)
+
+
+def _element_rule(eq: ParsedEquation):
+    """(evaluate(L, x0) -> (k_e, f_e), integration record) for this equation."""
+    return _element_evaluator(eq), _integration_record(eq)
+
+
+def integration_plan(spec: dict) -> dict:
+    """How this equation's element integrals are computed, and why.
+
+    The same decision solve_equation_beam makes and records, exposed so a
+    derivation document or a report can state the method without solving. The
+    first call for a polynomial spec pays for the symbolic integration; every
+    call after that is free, because the choice is cached per equation.
+
+    Args:
+        spec: equation spec dict (or an already-parsed ParsedEquation).
+
+    Returns:
+        dict with "method" ("symbolic" or "quadrature"), "points" (the
+        Gauss-Legendre order, or None when symbolic) and "reason", a sentence
+        saying why that method was chosen.
+    """
+    return dict(_element_rule(parse_spec(spec))[1])
+
+
 def element_matrices(spec: dict, L, x0=0):
-    """Element stiffness and load vector for one element, by sympy integration.
+    """Element stiffness and load vector for one element.
+
+    Integrated symbolically for a polynomial spec, and by Gauss-Legendre
+    quadrature otherwise — in which case L and x0 must both be numbers, since
+    a numerical rule has nothing to say about a symbolic element length.
 
     Args:
         spec: equation spec dict (or an already-parsed ParsedEquation).
@@ -273,11 +530,28 @@ def element_matrices(spec: dict, L, x0=0):
     Returns:
         (k_e, f_e): a 4x4 and a 4x1 sympy Matrix over the DOFs
         [v_i, slope_i, v_j, slope_j].
+
+    Raises:
+        EquationError: the spec is malformed, or it needs quadrature while L
+            or x0 is symbolic.
     """
     eq = parse_spec(spec)
-    k_e, f_e = _symbolic_element(eq)
-    subs = {_EL: sp.sympify(L), _X0: sp.sympify(x0)}
-    return k_e.subs(subs), f_e.subs(subs)
+    plan = _element_rule(eq)[1]
+    if plan["method"] == "symbolic":
+        k_e, f_e = _symbolic_element(eq)
+        subs = {_EL: sp.sympify(L), _X0: sp.sympify(x0)}
+        return k_e.subs(subs), f_e.subs(subs)
+
+    length, left = sp.sympify(L), sp.sympify(x0)
+    if not (length.is_number and left.is_number):
+        raise EquationError(
+            f"this equation is integrated by {plan['points']}-point quadrature "
+            f"({plan['reason']}), which needs a numeric element length and "
+            f"position; got L = {L} and x0 = {x0}. Element matrices symbolic in "
+            "the element length exist only for a spec that is polynomial in x."
+        )
+    k_e, f_e = _element_rule(eq)[0](float(length), float(left))
+    return sp.Matrix(k_e), sp.Matrix(f_e.reshape(4, 1))
 
 
 def _elements(model):
@@ -331,7 +605,7 @@ def assemble_equation(model: dict, equation: dict):
     n_dof = 2 * len(nodes)
     K = np.zeros((n_dof, n_dof))
     F = np.zeros(n_dof)
-    evaluate = _numeric_element(eq)
+    evaluate = _element_rule(eq)[0]
 
     for e in _elements(model):
         L = x_of[e["j"]] - x_of[e["i"]]
@@ -528,13 +802,17 @@ def solve_equation_beam(model: dict, equation: dict) -> dict:
     Returns:
         dict with "displacements" {node_id: {"v", "slope"}}, "reactions" at
         restrained DOFs only {node_id: {"F", "M"}}, "samples" of at least 21
-        points {"x", "v", "slope", "moment", "shear"}, and "max_abs" of each.
+        points {"x", "v", "slope", "moment", "shear"}, "max_abs" of each, and
+        "integration" — {"method", "points", "reason"} — saying whether the
+        element entries are exact or numerical, and why.
 
     Raises:
-        EquationError: the spec is malformed, or the free system is not a
-            stable equilibrium (see _solve_free).
+        EquationError: the spec is malformed, the free system is not a stable
+            equilibrium (see _solve_free), or a coefficient is too sharp for
+            the quadrature rule to integrate reliably (see _quadrature_element).
     """
     eq = parse_spec(equation)
+    integration = _element_rule(eq)[1]
     K, F, dof_map = assemble_equation(model, eq)
 
     held = set(_restrained(model, dof_map))
@@ -570,6 +848,8 @@ def solve_equation_beam(model: dict, equation: dict) -> dict:
         "reactions": reactions,
         "samples": samples,
         "max_abs": max_abs,
+        # copied so a caller holding the result cannot edit the cached record
+        "integration": dict(integration),
     }
 
 
@@ -597,7 +877,7 @@ def equilibrium_terms(model: dict, equation: dict, result: dict) -> dict:
     eq = parse_spec(equation)
     _require_numeric(eq)
     x_of = {n["id"]: float(n["x"]) for n in model["nodes"]}
-    evaluate = _numeric_element(eq)
+    evaluate = _element_rule(eq)[0]
 
     distributed = 0.0
     carried = 0.0

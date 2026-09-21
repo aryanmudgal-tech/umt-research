@@ -149,6 +149,20 @@ def _summarize(name, result):
             )
         except Exception:
             pass
+    if name == "solve_with_equation":
+        # The raw dict truncates inside the displacements, which hides how the
+        # element matrices were integrated - and a numerically integrated
+        # element must not be able to read as an exact one anywhere.
+        try:
+            peak, how = result["max_abs"], result["integration"]
+            order = f" ({how['points']} points)" if how["method"] == "quadrature" else ""
+            return (
+                f"max |v| = {abs(float(peak['v'])):.6e} m, "
+                f"max |M| = {abs(float(peak['moment'])):.6e} N*m, "
+                f"element integrals {how['method']}{order}"
+            )
+        except Exception:
+            pass
     return str(result)[:RESULT_SUMMARY_CHARS]
 
 

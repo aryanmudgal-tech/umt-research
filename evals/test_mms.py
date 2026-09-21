@@ -76,13 +76,16 @@ def cantilever():
 def _mutate(monkeypatch, wrap):
     """Bug the element matrices for one test.
 
-    _numeric_element is the seam the assembly actually goes through: it turns a
-    parsed equation into the callable that hands out (k_e, f_e) per element, so
-    wrapping it is the closest thing to shipping a wrong element matrix.
+    _element_evaluator is the seam the assembly actually goes through: it turns
+    a parsed equation into the callable that hands out (k_e, f_e) per element,
+    so wrapping it is the closest thing to shipping a wrong element matrix. It
+    is the seam for BOTH integration methods, which matters here because a
+    manufactured load carries a sine and so puts these runs on the quadrature
+    path; evals/test_quadrature.py bugs the symbolic path the same way.
     """
     from tools.fem import equation
 
-    monkeypatch.setattr(equation, "_numeric_element", wrap(equation._numeric_element))
+    monkeypatch.setattr(equation, "_element_evaluator", wrap(equation._element_evaluator))
 
 
 @pytest.mark.parametrize("name", sorted(SPECS))

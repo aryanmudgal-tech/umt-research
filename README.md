@@ -57,8 +57,9 @@ Each run writes three things to `results/` (gitignored):
 
 The governing equation is an input, not code. Nothing in `tools/fem/equation.py`
 knows which beam equation you mean: it reads the equation you give it,
-integrates the element matrices for that equation with sympy, and solves. Three
-ways to change it, easiest first.
+integrates the element matrices for that equation — exactly with sympy when the
+coefficients are polynomials in `x`, by Gauss-Legendre quadrature when they are
+not — and solves. Three ways to change it, easiest first.
 
 **1. Say it in the brief, in plain English.** The orchestrator picks
 `solve_with_equation` instead of `solve_beam_3d` whenever the brief states or
@@ -97,9 +98,9 @@ may depend on `x` (`"E*I0*(1 + x/L)"` tapers the beam). Every symbol used must
 have a number in `params`.
 
 Whatever route you take, the report's **Governing equation** section prints the
-equation that produced its numbers, its parameters, and the derivation sympy
-performed for it — so the equation in the document is always the equation that
-was solved.
+equation that produced its numbers, its parameters, how its element integrals
+were computed, and the derivation for it — so the equation in the document is
+always the equation that was solved.
 
 ### How a new equation is still verified
 

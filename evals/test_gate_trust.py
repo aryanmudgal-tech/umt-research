@@ -28,7 +28,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from agent import live_view, run_phase1, trace_html  # noqa: E402
+from agent import gates, live_view, run_phase1, trace_html  # noqa: E402
 from agent.gates import (  # noqa: E402
     FAIL,
     SKIPPED,
@@ -198,6 +198,30 @@ def test_the_gate_still_passes_but_says_what_it_did_not_check(skipped_run):
     assert gate["passed"], "a skipped check must not fail the gate"
     for check in skipped:
         assert check["detail"].strip(), f"{check['name']} skipped without saying why"
+
+
+def test_a_gate_whose_every_check_was_skipped_does_not_pass(monkeypatch, runs):
+    """"Nothing failed" is not a verdict when nothing ran.
+
+    One skip among passes is fine — the run still verified something. A run
+    where EVERY check skipped has verified nothing at all, and reporting PASS
+    for it would be the gate at its most misleading: a green banner over a
+    result no check ever looked at. No spec reaches this today; the point is
+    that none ever can.
+    """
+    model, equation, result = runs["elastic_foundation"]
+
+    def all_skipped(*_args, **_kwargs):
+        return [
+            {"name": name, "status": SKIPPED, "passed": True, "detail": "did not apply"}
+            for name in ("equation_equilibrium", "equation_mms")
+        ]
+
+    monkeypatch.setattr(gates, "equation_checks", all_skipped)
+    gate = deterministic_gate(model, result, equation)
+
+    assert gate["tally"] == {"passed": 0, "skipped": 2, "failed": 0, "total": 2}
+    assert not gate["passed"], "a gate that ran no check must not report PASS"
 
 
 def gate_events(gate):

@@ -46,6 +46,7 @@ from tools.fem.derivation import (  # noqa: E402
     galerkin_derivation_markdown,
     validate_equation_spec,
 )
+from tools.fem.equation import integration_plan  # noqa: E402
 from tools.fem.pynite_check import solve_with_pynite  # noqa: E402
 
 DEFAULT_BRIEF = REPO_ROOT / "evals" / "brief_25m.md"
@@ -211,7 +212,30 @@ def _results_rows(model_dict, result, equation=None):
     ]
 
 
-def _equation_section(equation):
+def _integration_lines(equation, result):
+    """How the element integrals were computed, taken from the run, not guessed.
+
+    Read from the solver's own record when the result carries one; only a
+    result from an older run falls back to asking what the method would be.
+    """
+    record = (result or {}).get("integration") or integration_plan(equation)
+    method, points, reason = record["method"], record["points"], record["reason"]
+    reason = _cell(reason)
+    reason = reason[0].upper() + reason[1:]
+    if method == "quadrature":
+        how = (
+            f"**Element integrals: {points}-point Gauss-Legendre quadrature "
+            f"(numerical, not closed-form).** {reason}. Every element was "
+            f"integrated again at {2 * points} points and the two agree entry by "
+            "entry, so the matrices are converged - but they are numbers this run "
+            "computed, not exact expressions."
+        )
+    else:
+        how = f"**Element integrals: symbolic (exact).** {reason}."
+    return ["", how, ""]
+
+
+def _equation_section(equation, result=None):
     """The '## Governing equation' section: symbols, parameters, derivation.
 
     Shown instead of the canned Galerkin derivation whenever the professor's
@@ -225,8 +249,8 @@ def _equation_section(equation):
         "",
         "This run did NOT use the pipeline's default beam equation. The "
         "equation below came with the brief and was solved by "
-        "`solve_with_equation`, which integrates its element matrices "
-        "symbolically at run time.",
+        "`solve_with_equation`, which integrates its element matrices from the "
+        "equation itself at run time.",
         "",
         f"**{_cell(parsed['label'])}**",
         "",
@@ -242,6 +266,7 @@ def _equation_section(equation):
     ]
     for name, value in parsed["params"].items():
         lines.append(f"| `{_cell(name)}` | {_fmt(value)} |")
+    lines += _integration_lines(equation, result)
     lines += [
         "",
         "### Derivation for this equation",
@@ -271,7 +296,7 @@ def write_report(
         "",
     ]
     if equation is not None:
-        lines += _equation_section(equation)
+        lines += _equation_section(equation, result)
     else:
         lines += [
             "## Galerkin derivation",
@@ -369,6 +394,10 @@ def _summary_lines(model_used, model_dict, result, det, verdict, passed, report,
     ]
     if equation is not None:
         lines.append(f"  equation           : {equation.get('label') or 'custom equation'}")
+        record = (result or {}).get("integration") or {}
+        if record:
+            order = f" ({record['points']} points)" if record["method"] == "quadrature" else ""
+            lines.append(f"  element integrals  : {record['method']}{order}")
     for name, fem, _cf, _py in _results_rows(model_dict, result, equation):
         lines.append(f"  {name:<26}: {_fmt(fem)}")
     counts = det.get("tally") or tally(det["checks"])

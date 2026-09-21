@@ -643,7 +643,9 @@ def deterministic_gate(model_dict: dict, result: dict, equation: dict = None) ->
     Returns:
         {"passed": bool, "checks": [check dicts], "tally": counts}. Each check
         carries "status" ("pass" / "fail" / "skipped"), "passed" (False only
-        for a failure) and "detail".
+        for a failure) and "detail". The gate passes only when nothing failed
+        AND at least one check actually passed: a run in which every check was
+        skipped has verified nothing, and "no failures" is not a verdict on it.
     """
     checks = []
 
@@ -663,7 +665,10 @@ def deterministic_gate(model_dict: dict, result: dict, equation: dict = None) ->
 
     counts = tally(checks)
     gate = {
-        "passed": counts["failed"] == 0,
+        # Not just "nothing failed": an all-skipped run would clear that bar
+        # with zero checks actually run, and report PASS for a result nothing
+        # looked at. Unreachable today, and now impossible.
+        "passed": counts["failed"] == 0 and counts["passed"] > 0,
         "checks": checks,
         "tally": counts,
     }
