@@ -758,6 +758,13 @@ def _samples(model, eq, u, dof_map):
 # Looking more finely than the interpolation is right would only cost time.
 PEAK_SCAN_POINTS = 51
 
+# A v4 that does NOT vary along the span leaves moment = a4 v'' linear on the
+# element and shear = a4 v''' constant, so both take their largest value at an
+# end and there is nothing between the ends to find. Scanning one anyway costs
+# the professor's own prismatic beam about five times its solve time and
+# returns, of necessity, the endpoint value it already had.
+FLAT_SCAN_POINTS = 2
+
 # A stationary point this far (relative to the element length) from a node is
 # treated as being at the node. At a billionth of an element the height between
 # the two differs by about 1e-18 of the deflection - a thousand times below the
@@ -774,6 +781,13 @@ def _stationary_points(coeffs, L):
     to a few ulp that close to a node. Both ends are candidates in their own
     right and are read off exactly, so dropping such a root loses nothing and
     keeps a peak that sits on a node equal to the nodal value bit for bit.
+
+    np.roots is not the long way round to the quadratic formula. It works from
+    the companion matrix, which still resolves the small root when the leading
+    coefficient is a few ulp off zero — an element carrying no shear, where
+    (-B ± sqrt(B² - 4AC)) / 2A subtracts two numbers that agree to the last bit
+    and returns 0.0 instead. tools/fem/solver.py has no numpy polynomial in
+    hand and writes out the stable form; see _quadratic_roots there.
     """
     derivative = np.polyder(np.asarray(coeffs, dtype=float)[::-1])
     if not derivative.size or not np.any(derivative):
@@ -799,15 +813,18 @@ def _peaks(model, eq, u, dof_map):
     Deflection is a cubic on each element and slope is its derivative, so their
     extrema are located exactly, as the roots of a quadratic and of a line.
     Moment and shear carry a4(x), which need not be polynomial, so those two
-    are scanned at PEAK_SCAN_POINTS per element instead. Every candidate is
-    read back through the same shape functions the samples use, which is what
-    keeps a peak sitting on a node equal to that node's value to the last bit.
+    are scanned at PEAK_SCAN_POINTS per element instead - unless a4 is the same
+    everywhere, which leaves them a line and a constant, whose ends are all
+    there is to look at (FLAT_SCAN_POINTS). Every candidate is read back
+    through the same shape functions the samples use, which is what keeps a
+    peak sitting on a node equal to that node's value to the last bit.
     """
     x_of = {n["id"]: float(n["x"]) for n in model["nodes"]}
     elems = sorted(_elements(model), key=lambda e: x_of[e["i"]])
     N, N1, N2, N3 = _hermite_numeric()
     a4_fn, da4_fn = _a4_callables(eq)
     powers_of = _hermite_powers()
+    scan = PEAK_SCAN_POINTS if X in eq.coeffs["v4"].free_symbols else FLAT_SCAN_POINTS
 
     peaks = {key: 0.0 for key in ("v", "slope", "moment", "shear")}
     for e in elems:
@@ -820,7 +837,7 @@ def _peaks(model, eq, u, dof_map):
             for s in (0.0, L, *_stationary_points(coeffs, L)):
                 peaks[key] = max(peaks[key], abs(float(np.dot(basis(s, L), d))))
 
-        for s in np.linspace(0.0, L, PEAK_SCAN_POINTS):
+        for s in np.linspace(0.0, L, scan):
             x = x_of[e["i"]] + s
             v2 = float(np.dot(N2(s, L), d))
             v3 = float(np.dot(N3(s, L), d))
