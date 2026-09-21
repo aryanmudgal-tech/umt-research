@@ -318,12 +318,15 @@ def test_gate_emits_one_event_per_check_plus_one_result():
     assert events[-1]["type"] == "gate_result"  # the result comes last
     assert [e["data"]["name"] for e in checks] == [c["name"] for c in gate["checks"]]
     assert [e["data"]["passed"] for e in checks] == [c["passed"] for c in gate["checks"]]
+    assert [e["data"]["status"] for e in checks] == [c["status"] for c in gate["checks"]]
     assert all(isinstance(e["data"]["detail"], str) for e in checks)
 
     summary = results[0]["data"]
     assert summary == {
         "passed": True,
         "n_passed": len(gate["checks"]),
+        "n_skipped": 0,  # this model IS the textbook case, so nothing is skipped
+        "n_failed": 0,
         "n_total": len(gate["checks"]),
     }
     json.dumps(events)

@@ -1,0 +1,16 @@
+{
+  "_comment": "The pipeline's default: a prismatic Euler-Bernoulli beam in pure bending, carrying a uniform downward load, with no axial force and no support from the ground.",
+  "label": "Euler-Bernoulli beam",
+  "coeffs": {
+    "v4": "E*I",
+    "v2": "0",
+    "v1": "0",
+    "v0": "0"
+  },
+  "rhs": "q",
+  "params": {
+    "E": 30e9,
+    "I": 0.005,
+    "q": -30e3
+  }
+}

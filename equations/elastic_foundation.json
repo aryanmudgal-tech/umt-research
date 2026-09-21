@@ -1,0 +1,17 @@
+{
+  "_comment": "A beam resting on soil: the ground pushes back in proportion to how far the beam sinks into it, which adds a k*v term (the Winkler foundation) to the bending equation.",
+  "label": "Beam on elastic foundation",
+  "coeffs": {
+    "v4": "E*I",
+    "v2": "0",
+    "v1": "0",
+    "v0": "k"
+  },
+  "rhs": "q",
+  "params": {
+    "E": 30e9,
+    "I": 0.005,
+    "k": 1.0e7,
+    "q": -30e3
+  }
+}

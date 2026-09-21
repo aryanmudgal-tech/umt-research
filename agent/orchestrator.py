@@ -2,7 +2,7 @@
 
 from google.adk.agents import LlmAgent
 
-from agent.recorder import solve_beam_3d
+from agent.recorder import solve_beam_3d, solve_with_equation
 from agent.trace import attach_observers
 from tools.fem.analytical import closed_form
 from tools.fem.derivation import galerkin_derivation_markdown
@@ -15,6 +15,13 @@ _SCHEMA = """{
   "supports": {node_id: [bool, bool, bool, bool, bool, bool]},      # True = restrained; DOF order [ux, uy, uz, rx, ry, rz]
   "distributed_loads": [{"element": elem_id or "all", "direction": "y" or "z", "w1": float, "w2": float}],  # signed N/m, linear w1 at node i -> w2 at node j
   "point_loads": [{"node": node_id, "dof": "FX"|"FY"|"FZ"|"MX"|"MY"|"MZ", "value": float}]                  # N or N*m
+}"""
+
+_EQUATION_SCHEMA = """{
+  "label": str,                                        # human name, e.g. "Beam on elastic foundation"
+  "coeffs": {"v4": str, "v2": str, "v1": str, "v0": str},   # sympy-parseable expressions in x and the param names
+  "rhs": str,                                          # the distributed load f(x)
+  "params": {name: float}                              # every symbol used above, as a number in SI units
 }"""
 
 _INSTRUCTION = f"""You are the structural-engineering orchestrator for a beam-analysis pipeline.
@@ -35,15 +42,62 @@ Modeling rules:
 - If the brief does not give G, A, Iy or J, default G = E/2.4, A = 0.5,
   Iy = Iz, J = 0.001; these do not affect bending about z under y loads.
 
+CHOOSING THE SOLVER - read the brief for the governing equation:
+- Call solve_beam_3d for a STANDARD beam: Euler-Bernoulli bending, prismatic
+  section, no soil support, no axial force.
+- Call solve_with_equation when the brief STATES OR IMPLIES A DIFFERENT
+  GOVERNING EQUATION. Signals to watch for:
+    * the beam rests on soil, ground, ballast, a subgrade or an elastic
+      foundation, or a "modulus of subgrade reaction" / spring constant k
+      is given -> add a v0 term, v0 = "k";
+    * an axial force, thrust, prestress or buckling load P acts along the beam
+      -> add a v2 term, v2 = "P" (compression positive);
+    * the depth, section or stiffness VARIES along the span (tapered, haunched,
+      EI as a function of x) -> make v4 depend on x, e.g. "E*I0*(1 + x/L)";
+    * the brief writes the differential equation out explicitly -> transcribe
+      its coefficients.
+  Call solve_with_equation EXACTLY ONCE, with the same model dict plus an
+  equation spec per this schema:
+
+{_EQUATION_SCHEMA}
+
+  The spec means this residual, in this exact sign convention:
+
+      a4*v'''' + a2*v'' + a1*v' + a0*v = f(x)
+
+  with a4 = coeffs.v4 and so on, v(x) the transverse deflection, x measured
+  along the beam, SI units, and DOWNWARD NEGATIVE - so a downward load of
+  30 kN/m is rhs "q" with q = -30e3, and v comes out negative. A coefficient
+  may depend on x. A v3 term is not supported. Leave a coefficient out or set
+  it to "0" when the brief does not call for it.
+
+  Worked example - a 25 m beam on soil of stiffness k = 1.0e7 N/m per m,
+  carrying 30 kN/m downward, E = 30 GPa, I = 0.005 m^4:
+
+      {{"label": "Beam on elastic foundation",
+        "coeffs": {{"v4": "E*I", "v2": "0", "v1": "0", "v0": "k"}},
+        "rhs": "q",
+        "params": {{"E": 30e9, "I": 0.005, "k": 1.0e7, "q": -30e3}}}}
+
+  solve_with_equation reads the model's nodes, supports and point_loads only:
+  the distributed load is the equation's rhs, so put it there, not in
+  distributed_loads. Its results are named v, slope, moment and shear (not uy
+  and Mz). Mesh the equation path with at least 8 elements; moment and shear
+  are sampled from each element's own cubic, so a coarse mesh blurs them.
+
 Process:
-- Call solve_beam_3d EXACTLY ONCE with the finished model dict.
+- Call EXACTLY ONE solver, EXACTLY ONCE.
 - Never do arithmetic yourself: every number you state must come verbatim from
   a tool result. You may call closed_form_case to cross-reference a textbook
   value, and galerkin_derivation_markdown only if the user asks for the
   derivation.
-- End with a concise engineering narrative naming the midspan deflection, the
-  maximum bending moment, and the support shear values from the solve_beam_3d
-  output.
+- ALWAYS say which governing equation you used, in the narrative: write the
+  equation out in symbols with its parameter values, and say why - either
+  "the standard Euler-Bernoulli beam equation EI*v'''' = q" for solve_beam_3d,
+  or the spec you passed to solve_with_equation and the phrase in the brief
+  that called for it.
+- End with a concise engineering narrative naming the maximum deflection, the
+  maximum bending moment, and the support reactions from the solver output.
 """
 
 
@@ -79,6 +133,11 @@ def build_orchestrator(model_name: str) -> LlmAgent:
         name="orchestrator",
         model=model_name,
         instruction=_instruction,
-        tools=[solve_beam_3d, galerkin_derivation_markdown, closed_form_case],
+        tools=[
+            solve_beam_3d,
+            solve_with_equation,
+            galerkin_derivation_markdown,
+            closed_form_case,
+        ],
     )
     return attach_observers(agent, role="orchestrator", model=model_name)

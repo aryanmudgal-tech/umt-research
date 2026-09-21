@@ -1,0 +1,17 @@
+{
+  "_comment": "A beam that also carries an axial force: the compression P acting through the deflected shape adds a P*v'' term, which softens the beam and, on its own, predicts Euler buckling at P = pi^2*E*I/L^2.",
+  "label": "Beam-column (axial force P, compression positive)",
+  "coeffs": {
+    "v4": "E*I",
+    "v2": "P",
+    "v1": "0",
+    "v0": "0"
+  },
+  "rhs": "q",
+  "params": {
+    "E": 30e9,
+    "I": 0.005,
+    "P": 2.0e6,
+    "q": -30e3
+  }
+}

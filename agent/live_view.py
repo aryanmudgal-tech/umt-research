@@ -38,7 +38,16 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+from agent.gates import FAIL, PASS, SKIPPED, check_status
 from agent.jsonfmt import compact_json
+
+# How each gate-check status reads in the log. SKIPPED is deliberately not
+# green: a check that did not run has verified nothing.
+_STATUS_STYLE = {
+    PASS: (" PASS ", "bold green"),
+    FAIL: (" FAIL ", "bold red"),
+    SKIPPED: (" SKIP ", "bold yellow"),
+}
 
 DEFAULT_TITLE = "The 25-Meter Agent"
 
@@ -363,9 +372,11 @@ class LiveView:
         )
 
     def _r_gate_check(self, data):
-        passed = bool(data.get("passed"))
+        # A skipped check verified nothing: it reads SKIPPED, never PASS.
+        status = check_status(data)
+        label, style = _STATUS_STYLE[status]
         line = Text("  ")
-        line.append(" PASS " if passed else " FAIL ", style="bold green" if passed else "bold red")
+        line.append(label, style=style)
         line.append(f" {_text(data.get('name'))}")
         detail = _text(data.get("detail"))
         if detail:
@@ -379,10 +390,11 @@ class LiveView:
         body.append(
             f"deterministic gate: {'PASS' if passed else 'FAIL'}", style=f"bold {style}"
         )
-        body.append(
-            f"   {data.get('n_passed', '?')}/{data.get('n_total', '?')} checks passed",
-            style="dim",
-        )
+        tally = f"   {data.get('n_passed', '?')}/{data.get('n_total', '?')} checks passed"
+        skipped = data.get("n_skipped")
+        if skipped:
+            tally += f", {skipped} skipped"
+        body.append(tally, style="dim")
         return Panel(body, border_style=style, padding=(0, 1))
 
     def _r_verdict(self, data):

@@ -112,22 +112,38 @@ async def _run_once(agent: LlmAgent, prompt: str) -> str:
     return final
 
 
+_EQUATION_NOTE = (
+    "\n\nNOTE: these results were NOT produced by the standard Euler-Bernoulli "
+    "beam element. The governing equation above was supplied with the problem "
+    "and reads a4*v'''' + a2*v'' + a1*v' + a0*v = f(x), SI units, deflection "
+    "downward negative. Your pynite_crosscheck and closed_form_case tools "
+    "assume the standard equation, so they do NOT apply here unless every one "
+    "of a2, a1 and a0 is zero: say so rather than refuting on that basis.\n"
+)
+
+
 def run_verifier(
-    problem_text: str, model_dict: dict, result: dict, model_names=None
+    problem_text: str, model_dict: dict, result: dict, model_names=None, equation=None
 ) -> dict:
     """Verify (model_dict, result) against problem_text with an isolated agent.
+
+    Pass `equation` when the run went through solve_with_equation, so the
+    verifier judges the results against the equation actually solved rather
+    than against the standard beam its own tools assume.
 
     Returns {"refuted": bool, "checks": [...], "reasoning": str, "model": str}.
     A verifier that cannot run or cannot be parsed counts as a refutation.
     """
     model_names = list(model_names or VERIFIER_MODELS)
-    payload = json.dumps(
-        {"model": to_plain(model_dict), "result": to_plain(result)}, indent=2
-    )
+    numbers = {"model": to_plain(model_dict), "result": to_plain(result)}
+    if equation is not None:
+        numbers["governing_equation"] = to_plain(equation)
+    payload = json.dumps(numbers, indent=2)
     prompt = (
         "Problem statement:\n" + problem_text.strip() + "\n\n"
         "Computed FEM model and results (raw numbers, JSON):\n" + payload + "\n\n"
-        "Recompute independently with your tools and try to refute these "
+        + (_EQUATION_NOTE if equation is not None else "")
+        + "Recompute independently with your tools and try to refute these "
         "results. Then finish with ONLY a JSON verdict object of the form:\n"
         '{"refuted": true|false, "checks": [{"name": "...", "passed": '
         'true|false, "detail": "..."}], "reasoning": "..."}'

@@ -1,0 +1,17 @@
+{
+  "_comment": "A beam whose cross-section grows along the span: the second moment of area rises linearly from I0 at the left end to 2*I0 at x = L, so the bending stiffness is a function of x rather than a constant.",
+  "label": "Tapered beam (EI varying along the span)",
+  "coeffs": {
+    "v4": "E*I0*(1 + x/L)",
+    "v2": "0",
+    "v1": "0",
+    "v0": "0"
+  },
+  "rhs": "q",
+  "params": {
+    "E": 30e9,
+    "I0": 0.0025,
+    "L": 25.0,
+    "q": -30e3
+  }
+}

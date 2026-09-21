@@ -15,6 +15,7 @@ import html
 import json
 from pathlib import Path
 
+from agent.gates import FAIL, PASS, SKIPPED, check_status
 from agent.jsonfmt import compact_json, was_folded
 
 STAGE_ORDER = ["brief", "orchestrator", "gate", "verifier", "report"]
@@ -304,6 +305,15 @@ def _pill(passed, ok_text="PASS", bad_text="FAIL") -> str:
     return f'<span class="pill {cls}">{_esc(text)}</span>'
 
 
+# A skipped check gets its own pill, never the green one: it verified nothing.
+_STATUS_PILL = {PASS: ("ok", "PASS"), FAIL: ("bad", "FAIL"), SKIPPED: ("warn", "SKIPPED")}
+
+
+def _status_pill(check) -> str:
+    cls, text = _STATUS_PILL[check_status(check)]
+    return f'<span class="pill {cls}">{text}</span>'
+
+
 def _fmt_t(value) -> str:
     try:
         return f"{float(value):.3f} s"
@@ -358,7 +368,7 @@ def _checks_table(checks, times=None) -> str:
         if times:
             cells += f'<td class="t">{_esc(times[index])}</td>'
         cells += f'<td class="name">{_esc(check.get("name", ""))}</td>'
-        cells += f"<td>{_pill(bool(check.get('passed')))}</td>"
+        cells += f"<td>{_status_pill(check)}</td>"
         cells += f'<td class="det">{_esc(check.get("detail", ""))}</td>'
         rows.append(f"<tr>{cells}</tr>")
     if not rows:
@@ -434,7 +444,10 @@ def _render_gate_checks(events) -> str:
 def _render_gate_result(event, data) -> str:
     head = f'<div class="head">{_head_inner(event)}</div>'
     body = f'<div class="gist">{_pill(bool(data.get("passed")))} '
-    body += _esc(f"{data.get('n_passed', 0)} of {data.get('n_total', 0)} checks passed")
+    tally = f"{data.get('n_passed', 0)} of {data.get('n_total', 0)} checks passed"
+    if data.get("n_skipped"):
+        tally += f", {data['n_skipped']} skipped"
+    body += _esc(tally)
     body += "</div>"
     return head + body
 
