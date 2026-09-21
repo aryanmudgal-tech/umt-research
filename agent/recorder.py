@@ -113,8 +113,9 @@ def solve_beam_3d(model: dict) -> dict:
 
     Returns:
         dict with displacements per node, reactions at restrained DOFs,
-        internal-force diagrams along the beam, max_abs values, and the
-        total applied load — all in SI units.
+        internal-force diagrams along the beam, max_abs values — the peak
+        deflections being the largest anywhere along the beam, not merely at
+        the nodes — and the total applied load, all in SI units.
     """
     result = to_plain(_solve_beam_3d(model))
     recorder.record(model, result, tool=BEAM_TOOL)
@@ -144,7 +145,9 @@ def solve_with_equation(model: dict, equation: dict) -> dict:
     Returns:
         dict with "displacements" {node_id: {"v", "slope"}}, "reactions" at
         restrained DOFs only, "samples" of at least 21 points {"x", "v",
-        "slope", "moment", "shear"}, and "max_abs" of each.
+        "slope", "moment", "shear"}, and "max_abs" — the largest absolute
+        value each of those four reaches anywhere along the beam, which is in
+        general at neither a node nor a sampled point.
     """
     result = to_plain(_solve_equation_beam(model, equation))
     recorder.record(model, result, tool=EQUATION_TOOL, equation=equation)

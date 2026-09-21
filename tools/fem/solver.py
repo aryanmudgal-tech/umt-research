@@ -150,7 +150,10 @@ def solve_beam_3d(model):
 
     Returns the result dict: displacements, reactions at restrained DOFs,
     internal-force diagrams sampled along the beam, max absolute values,
-    and the total applied load.
+    and the total applied load. max_abs["uy"] and ["uz"] are the largest
+    deflections anywhere along the beam, found on each element's own cubic -
+    not merely the largest nodal ones, which miss a peak between two nodes
+    however fine the mesh is. See _bending_peak.
     """
     K, F, dof_map = assemble(model)
     n_dof = K.shape[0]
@@ -187,10 +190,7 @@ def solve_beam_3d(model):
 
     diagrams = _diagrams(model, u, dof_map)
 
-    max_abs = {
-        "uy": max(abs(v["uy"]) for v in displacements.values()),
-        "uz": max(abs(v["uz"]) for v in displacements.values()),
-    }
+    max_abs = _deflection_peaks(model, u, dof_map)
     for key in ("Mz", "My", "Vy", "Vz", "N", "T"):
         max_abs[key] = max(abs(p[key]) for p in diagrams)
 
@@ -203,6 +203,85 @@ def solve_beam_3d(model):
         "max_abs": max_abs,
         "total_applied": total,
     }
+
+
+# A stationary point this far (relative to the element length) from a node is
+# treated as being at the node. At a billionth of an element the two heights
+# differ by about 1e-18 of the deflection - a thousand times below the last bit
+# of a double - so nothing is given up, while the shape functions are only good
+# to a few ulp that close to a node. See _bending_peak.
+_EDGE_MARGIN = 1e-9
+
+
+def _hermite_deflection(a, L, w1, t1, w2, t2):
+    """The deflection at local coordinate a = s/L, from the element's end values.
+
+    The same four Hermite cubics the element stiffness is built from, in their
+    nodal (partition-of-unity) form: at a = 0 and a = 1 this returns w1 and w2
+    exactly, and just inside an end it returns them to the last bit, which the
+    expanded polynomial would not. t1 and t2 are SLOPES d(w)/dx, not rotation
+    DOFs - see _bending_peak for the x-z plane's sign.
+    """
+    return (
+        (1 - a) ** 2 * (1 + 2 * a) * w1
+        + L * a * (1 - a) ** 2 * t1
+        + a**2 * (3 - 2 * a) * w2
+        + L * a**2 * (a - 1) * t2
+    )
+
+
+def _bending_peak(dofs, L, sign):
+    """Largest |deflection| anywhere on one element, ends included.
+
+    The nodes are where a Hermite solution is most accurate, and for anything
+    but a symmetric load they are not where the beam deflects most: reporting
+    the largest NODAL deflection hides the peak between two nodes, and refining
+    the mesh does not bring it back. The deflection is a cubic, so its interior
+    extrema are exactly the roots of its quadratic derivative - nothing has to
+    be searched for, and the reported figure is limited by the solve's own
+    accuracy rather than by where anyone chose to look.
+
+    dofs holds the plane's four DOFs [w_i, r_i, w_j, r_j]. sign = -1 carries
+    the theta_y = -d(uz)/dx convention, so the rotation DOFs enter as slopes
+    sign * r, exactly as in _hermite_block and _f_equivalent.
+    """
+    w1, r1, w2, r2 = dofs
+    t1, t2 = sign * r1, sign * r2
+    peak = max(abs(w1), abs(w2))
+
+    # w'(a) = 0, written in the local a = s/L: a cubic's derivative is a quadratic
+    chord = 6.0 * (w2 - w1) / L  # six times the slope of the element's chord
+    A = 3.0 * (t1 + t2) - chord
+    B = chord - 4.0 * t1 - 2.0 * t2
+    C = t1
+    if A == 0.0:
+        roots = [] if B == 0.0 else [-C / B]
+    else:
+        discriminant = B * B - 4.0 * A * C
+        if discriminant < 0.0:
+            return peak
+        root = math.sqrt(discriminant)
+        roots = [(-B + root) / (2.0 * A), (-B - root) / (2.0 * A)]
+
+    for a in roots:
+        if _EDGE_MARGIN < a < 1.0 - _EDGE_MARGIN:
+            peak = max(peak, abs(_hermite_deflection(a, L, w1, t1, w2, t2)))
+    return peak
+
+
+def _deflection_peaks(model, u, dof_map):
+    """The largest |uy| and |uz| ANYWHERE along the beam, not only at the nodes."""
+    x_of = {n["id"]: n["x"] for n in model["nodes"]}
+    peaks = {
+        key: max(abs(u[dof_map[(n["id"], slot)]]) for n in model["nodes"])
+        for key, slot in (("uy", 1), ("uz", 2))
+    }
+    for e in _elements(model):
+        L = x_of[e["j"]] - x_of[e["i"]]
+        idx = [dof_map[(e["i"], d)] for d in range(6)] + [dof_map[(e["j"], d)] for d in range(6)]
+        for key, plane, sign in (("uy", _BEND_Y_PLANE, +1), ("uz", _BEND_Z_PLANE, -1)):
+            peaks[key] = max(peaks[key], _bending_peak([u[idx[s]] for s in plane], L, sign))
+    return peaks
 
 
 def _diagrams(model, u, dof_map):

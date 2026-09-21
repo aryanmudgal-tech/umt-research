@@ -38,6 +38,15 @@ solution, but it is an unstable equilibrium and it points the wrong way, so a
 beam under a downward load comes back deflecting upward. Those systems are
 refused here rather than reported. See _solve_free.
 
+What a result calls its maximum is the maximum of the SOLUTION, not of the
+sample list. The samples are a readable series for plots and the report, and a
+peak falling between two of them would otherwise never be reported — and
+refining the mesh would not rescue it, because the samples keep landing at the
+same relative position inside each element. Deflection and slope are
+polynomials on the element, so their extrema are solved for exactly; moment and
+shear carry a4(x), which need not be a polynomial, so they are scanned densely
+instead. See _peaks.
+
 How the element integrals are computed is decided by the STRUCTURE of the spec,
 never by a timeout: a timeout needs a signal handler or a subprocess, and this
 module runs as an agent tool that may not be on the main thread. A spec whose
@@ -220,6 +229,21 @@ def _hermite_numeric():
     """(N, N', N'', N''') as fast callables of (xi, L) returning length-4 lists."""
     N = _hermite()
     return tuple(sp.lambdify((_XI, _EL), list(N.diff(_XI, d)), "numpy") for d in range(4))
+
+
+@lru_cache(maxsize=None)
+def _hermite_powers():
+    """Callable L -> (4, 4) array C, row k holding each shape function's xi**k term.
+
+    The deflection on an element is the cubic sum_j d_j N_j(xi), so C(L) @ d is
+    that cubic's coefficients in ascending powers of xi. Used only to LOCATE a
+    stationary point: the value there is always read back through the shape
+    functions themselves, which stay exact next to a node, where the cubic's
+    own coefficients cancel against each other.
+    """
+    N = _hermite()
+    powers = [[sp.expand(N[j]).coeff(_XI, k) for j in range(4)] for k in range(4)]
+    return sp.lambdify(_EL, sp.Matrix(powers), "numpy")
 
 
 def _tidy(expr):
@@ -589,6 +613,16 @@ def _elements(model):
     ]
 
 
+def _dof_indices(e, dof_map):
+    """The four global DOF indices of one element, in Hermite order."""
+    return [
+        dof_map[(e["i"], "v")],
+        dof_map[(e["i"], "slope")],
+        dof_map[(e["j"], "v")],
+        dof_map[(e["j"], "slope")],
+    ]
+
+
 def _require_numeric(eq: ParsedEquation):
     loose = sorted(s.name for s in eq.free_symbols())
     if loose:
@@ -630,8 +664,7 @@ def assemble_equation(model: dict, equation: dict):
         if L <= 0:
             raise EquationError(f"element {e['id']!r} has non-positive length {L}")
         k_e, f_e = evaluate(L, x_of[e["i"]])
-        idx = [dof_map[(e["i"], "v")], dof_map[(e["i"], "slope")],
-               dof_map[(e["j"], "v")], dof_map[(e["j"], "slope")]]
+        idx = _dof_indices(e, dof_map)
         K[np.ix_(idx, idx)] += k_e
         F[idx] += f_e
 
@@ -665,21 +698,18 @@ def _restrained(model, dof_map):
     return sorted(held)
 
 
-def _samples(model, eq, u, dof_map):
-    """Sample v, slope, moment and shear along each element's own cubic."""
-    x_of = {n["id"]: float(n["x"]) for n in model["nodes"]}
-    elems = sorted(_elements(model), key=lambda e: x_of[e["i"]])
-    N, N1, N2, N3 = _hermite_numeric()
+def _a4_callables(eq: ParsedEquation):
+    """(a4(x), a4'(x)) as numpy callables, refusing a v4 that has a corner in it.
 
-    # Shear is (a4 v'')' , so sampling it needs a4 to be differentiable. A
-    # coefficient built from Abs, Min, Max or sign is not: sympy leaves an
-    # unevaluated Derivative that lambdify cannot print, and the professor
-    # would get a printer traceback from deep inside sympy instead of a
-    # sentence about his equation.
+    Shear is (a4 v'')' , so reading it off the element interpolation needs a4
+    to be differentiable. A coefficient built from Abs, Min, Max or sign is
+    not: sympy leaves an unevaluated Derivative that lambdify cannot print, and
+    the professor would get a printer traceback from deep inside sympy instead
+    of a sentence about his equation.
+    """
     a4 = eq.coeffs["v4"]
     try:
-        a4_fn = sp.lambdify(X, a4, "numpy")
-        da4_fn = sp.lambdify(X, sp.diff(a4, X), "numpy")
+        return sp.lambdify(X, a4, "numpy"), sp.lambdify(X, sp.diff(a4, X), "numpy")
     except Exception as exc:
         raise EquationError(
             f"coefficient 'v4' = {a4} cannot be differentiated along the span, "
@@ -688,13 +718,19 @@ def _samples(model, eq, u, dof_map):
             f"write the variation as a smooth expression in x instead ({exc})"
         ) from exc
 
+
+def _samples(model, eq, u, dof_map):
+    """Sample v, slope, moment and shear along each element's own cubic."""
+    x_of = {n["id"]: float(n["x"]) for n in model["nodes"]}
+    elems = sorted(_elements(model), key=lambda e: x_of[e["i"]])
+    N, N1, N2, N3 = _hermite_numeric()
+    a4_fn, da4_fn = _a4_callables(eq)
+
     n_per = max(3, math.ceil(20 / len(elems)) + 1)  # >= 21 samples in total
     points = []
     for e in elems:
         L = x_of[e["j"]] - x_of[e["i"]]
-        idx = [dof_map[(e["i"], "v")], dof_map[(e["i"], "slope")],
-               dof_map[(e["j"], "v")], dof_map[(e["j"], "slope")]]
-        d = u[idx]
+        d = u[_dof_indices(e, dof_map)]
         for s in np.linspace(0.0, L, n_per):
             x = x_of[e["i"]] + s
             v2 = float(np.dot(N2(s, L), d))
@@ -710,6 +746,131 @@ def _samples(model, eq, u, dof_map):
                 }
             )
     return points
+
+
+# Points per element for the dense scan that reports peak moment and shear.
+# Deflection and slope are polynomials on the element, so their extrema are
+# solved for exactly; moment and shear carry a4(x), which need not be a
+# polynomial at all, so the only way to find their peak is to look. 51 points
+# is 50 intervals: the scan brackets an extremum to within h/100, and a smooth
+# field is flat at its peak, so the height it misses by falls as the square of
+# the spacing - of order 1/2500 of the element's own O(h^2) moment error.
+# Looking more finely than the interpolation is right would only cost time.
+PEAK_SCAN_POINTS = 51
+
+# A stationary point this far (relative to the element length) from a node is
+# treated as being at the node. At a billionth of an element the height between
+# the two differs by about 1e-18 of the deflection - a thousand times below the
+# last bit of a double - so nothing is given up. See _stationary_points.
+EDGE_MARGIN = 1e-9
+
+
+def _stationary_points(coeffs, L):
+    """Where a polynomial with these ascending coefficients is flat inside (0, L).
+
+    A root within EDGE_MARGIN of an end IS that end as far as a double is
+    concerned: the polynomial is flat there, so the two heights differ by less
+    than an ulp, while the shape functions in their factored form are only good
+    to a few ulp that close to a node. Both ends are candidates in their own
+    right and are read off exactly, so dropping such a root loses nothing and
+    keeps a peak that sits on a node equal to the nodal value bit for bit.
+    """
+    derivative = np.polyder(np.asarray(coeffs, dtype=float)[::-1])
+    if not derivative.size or not np.any(derivative):
+        return []
+    edge = EDGE_MARGIN * L
+    inside = []
+    for root in np.roots(derivative):
+        real = float(root.real)
+        if abs(root.imag) <= 1e-9 * (1.0 + abs(real)) and edge < real < L - edge:
+            inside.append(real)
+    return inside
+
+
+def _peaks(model, eq, u, dof_map):
+    """The largest |v|, |slope|, |moment| and |shear| ANYWHERE on the solution.
+
+    Not the largest sample. A peak that falls between two samples is invisible
+    to the sample list, and refining the mesh does not rescue it: the samples
+    keep landing at the same relative position inside each element, so the
+    reported maximum stalls while the solution underneath it goes on
+    converging.
+
+    Deflection is a cubic on each element and slope is its derivative, so their
+    extrema are located exactly, as the roots of a quadratic and of a line.
+    Moment and shear carry a4(x), which need not be polynomial, so those two
+    are scanned at PEAK_SCAN_POINTS per element instead. Every candidate is
+    read back through the same shape functions the samples use, which is what
+    keeps a peak sitting on a node equal to that node's value to the last bit.
+    """
+    x_of = {n["id"]: float(n["x"]) for n in model["nodes"]}
+    elems = sorted(_elements(model), key=lambda e: x_of[e["i"]])
+    N, N1, N2, N3 = _hermite_numeric()
+    a4_fn, da4_fn = _a4_callables(eq)
+    powers_of = _hermite_powers()
+
+    peaks = {key: 0.0 for key in ("v", "slope", "moment", "shear")}
+    for e in elems:
+        L = x_of[e["j"]] - x_of[e["i"]]
+        d = u[_dof_indices(e, dof_map)]
+        cubic = np.asarray(powers_of(L), dtype=float) @ d  # ascending powers of xi
+        slope_poly = np.polyder(cubic[::-1])[::-1]
+
+        for key, basis, coeffs in (("v", N, cubic), ("slope", N1, slope_poly)):
+            for s in (0.0, L, *_stationary_points(coeffs, L)):
+                peaks[key] = max(peaks[key], abs(float(np.dot(basis(s, L), d))))
+
+        for s in np.linspace(0.0, L, PEAK_SCAN_POINTS):
+            x = x_of[e["i"]] + s
+            v2 = float(np.dot(N2(s, L), d))
+            v3 = float(np.dot(N3(s, L), d))
+            EI = float(a4_fn(x))
+            peaks["moment"] = max(peaks["moment"], abs(EI * v2))
+            peaks["shear"] = max(peaks["shear"], abs(float(da4_fn(x)) * v2 + EI * v3))
+    return peaks
+
+
+def _restate(model, equation, displacements):
+    """(eq, u, dof_map) for a caller-supplied set of nodal displacements."""
+    eq = parse_spec(equation)
+    _require_numeric(eq)
+    nodes = model["nodes"]
+    dof_map = {
+        (n["id"], name): 2 * k + d
+        for k, n in enumerate(nodes)
+        for d, name in enumerate(("v", "slope"))
+    }
+    u = np.zeros(2 * len(nodes))
+    for node, dofs in displacements.items():
+        for name in ("v", "slope"):
+            if (node, name) in dof_map:
+                u[dof_map[(node, name)]] = float(dofs[name])
+    return eq, u, dof_map
+
+
+def peak_values(model: dict, equation: dict, displacements: dict) -> dict:
+    """The extrema a given set of nodal displacements implies, without solving.
+
+    The same four numbers solve_equation_beam reports as "max_abs", exposed so
+    a caller holding a result can re-derive its headline figures and compare.
+    Like sample_solution it re-derives rather than re-solves: the displacements
+    are the input.
+
+    Args:
+        model: the beam model dict (nodes, elements, supports).
+        equation: the equation spec dict, whose v4 sets moment and shear.
+        displacements: {node_id: {"v", "slope"}}, as a result carries them.
+
+    Returns:
+        {"v", "slope", "moment", "shear"} -> the largest absolute value each
+        reaches anywhere along the beam, which need not be at a node and need
+        not be at any sampled point.
+
+    Raises:
+        EquationError: the spec is malformed or not fully numeric.
+        KeyError: displacements is missing a node the model names.
+    """
+    return _peaks(model, *_restate(model, equation, displacements))
 
 
 def sample_solution(model: dict, equation: dict, displacements: dict) -> list:
@@ -731,20 +892,7 @@ def sample_solution(model: dict, equation: dict, displacements: dict) -> list:
         EquationError: the spec is malformed or not fully numeric.
         KeyError: displacements is missing a node the model names.
     """
-    eq = parse_spec(equation)
-    _require_numeric(eq)
-    nodes = model["nodes"]
-    dof_map = {
-        (n["id"], name): 2 * k + d
-        for k, n in enumerate(nodes)
-        for d, name in enumerate(("v", "slope"))
-    }
-    u = np.zeros(2 * len(nodes))
-    for node, dofs in displacements.items():
-        for name in ("v", "slope"):
-            if (node, name) in dof_map:
-                u[dof_map[(node, name)]] = float(dofs[name])
-    return _samples(model, eq, u, dof_map)
+    return _samples(model, *_restate(model, equation, displacements))
 
 
 def _solve_free(Kff, Ff, eq: ParsedEquation):
@@ -820,9 +968,11 @@ def solve_equation_beam(model: dict, equation: dict) -> dict:
     Returns:
         dict with "displacements" {node_id: {"v", "slope"}}, "reactions" at
         restrained DOFs only {node_id: {"F", "M"}}, "samples" of at least 21
-        points {"x", "v", "slope", "moment", "shear"}, "max_abs" of each, and
-        "integration" — {"method", "points", "reason"} — saying whether the
-        element entries are exact or numerical, and why.
+        points {"x", "v", "slope", "moment", "shear"}, "max_abs" — the largest
+        absolute value each of those four reaches ANYWHERE along the beam,
+        which is in general not one of the samples — and "integration",
+        {"method", "points", "reason"}, saying whether the element entries are
+        exact or numerical, and why.
 
     Raises:
         EquationError: the spec is malformed, the free system is not a stable
@@ -859,7 +1009,7 @@ def solve_equation_beam(model: dict, equation: dict) -> dict:
             reactions[node] = out
 
     samples = _samples(model, eq, u, dof_map)
-    max_abs = {k: max(abs(p[k]) for p in samples) for k in ("v", "slope", "moment", "shear")}
+    max_abs = _peaks(model, eq, u, dof_map)
 
     return {
         "displacements": displacements,

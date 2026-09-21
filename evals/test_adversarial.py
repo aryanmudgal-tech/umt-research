@@ -72,8 +72,10 @@ def test_ss_triangular_load_reactions_and_midspan():
 
 
 def test_ss_triangular_load_max_deflection_vs_roark():
-    # Roark: max deflection ~ 0.00652 W L^4 / EI at x ~ 0.519 L; a fine mesh
-    # must put a node close enough to the peak to land within 0.5%.
+    # Roark: max deflection ~ 0.00652 W L^4 / EI at x ~ 0.519 L. The peak lies
+    # between two nodes, and the solver now reports the extremum of the element
+    # cubic rather than the largest nodal value, so what is left inside the
+    # 0.5% is discretisation and Roark's own rounding.
     L, W = 25.0, 40e3
     n = 20
     model = make_model(

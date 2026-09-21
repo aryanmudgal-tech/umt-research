@@ -24,6 +24,7 @@ from tools.fem.equation import (
     assemble_equation,
     equilibrium_terms,
     parse_spec,
+    peak_values,
     sample_solution,
 )
 from tools.fem.invariants import check_invariants
@@ -500,9 +501,15 @@ def _equation_samples_check(model, equation, result):
     re-derives both from the reported nodal values: it is a consistency check
     on what was reported, not a second opinion on the mathematics, which is
     what MMS is for.
+
+    max_abs is the extremum of the whole interpolation, which is in general not
+    one of the samples, so it is re-derived by the same search rather than by
+    scanning the sample list - a max taken over the samples would flag an
+    honest peak as an inconsistency.
     """
     try:
         recomputed = sample_solution(model, equation, result["displacements"])
+        implied_peaks = peak_values(model, equation, result["displacements"])
     except Exception as exc:
         return _verdict("equation_samples_consistent", False, f"could not be evaluated: {exc}")
 
@@ -523,7 +530,7 @@ def _equation_samples_check(model, equation, result):
             if gap >= worst:
                 worst, where = gap, f"{key} at x = {implied['x']:.3f} m"
     for key, value in (result.get("max_abs") or {}).items():
-        implied = max(abs(p[key]) for p in recomputed)
+        implied = implied_peaks[key]
         gap = abs(float(value) - implied) / (implied or 1.0)
         if gap >= worst:
             worst, where = gap, f"max_abs[{key!r}]"
@@ -593,7 +600,8 @@ def _equation_closed_form_checks(model, equation, result):
                 result["max_abs"]["v"],
                 ref["max_deflection"],
                 max(REL_TOL, 1.0 / n**4),
-                "nodal deflections are exact for Hermite cubics",
+                "the peak is the extremum of the element cubic, and nodal "
+                "deflections are exact for Hermite cubics",
             ),
             (
                 "closed_form_max_moment",
