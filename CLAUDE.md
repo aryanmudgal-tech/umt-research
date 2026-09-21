@@ -11,7 +11,20 @@ branch `main`). This directory is the repository root.
 
 - **Commit very frequently.** Commit at every natural checkpoint — a file finished,
   a stage working, tests going green, a doc updated — without waiting to be asked.
-  Push after committing. Small, frequent commits, not one big one at the end.
+  Push immediately after each commit; work that sits uncommitted on the machine
+  does not exist as far as this repo is concerned.
+- **One logical change per commit.** As a rule of thumb a commit touches a handful
+  of files, not a dozen, and hundreds of lines, not thousands. A commit of 20 files
+  and 3,000 lines means several commits were missed. Concretely:
+  - a new module and its tests go in together, on their own, the moment they pass;
+  - a bug fix and its regression test are one commit, separate from any other fix;
+  - documentation and comment changes are their own commit;
+  - a refactor is never mixed with a behaviour change.
+- **Never batch a whole feature or a whole background task into one commit.** When
+  work is delegated to subagents, tell them in their prompt to commit and push each
+  piece as it goes green rather than once at the end, and commit each phase's output
+  as it lands instead of waiting for the run to finish. A long run should show up as
+  a steady series of commits, not silence followed by one enormous one.
 - **The author is always Aryan Mudgal `<aryanmudgal4493@gmail.com>`.** Never Claude.
 - **No Claude attribution of any kind in commits:** no `Co-Authored-By: Claude`
   trailers, no `Claude-Session:` trailers, no "Generated with Claude Code" footers.
