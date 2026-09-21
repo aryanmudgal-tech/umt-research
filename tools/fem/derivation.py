@@ -12,7 +12,8 @@ every matrix in the output is computed by sympy at call time.
 import re
 
 import sympy as sp
-from sympy.parsing.sympy_parser import parse_expr, standard_transformations
+
+from tools.fem.safe_expr import ExpressionError, clean_label, parse_expression
 
 _DISPLAY_MATH = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
 
@@ -184,16 +185,6 @@ $$\\mathbf{{k}}_{{12 \\times 12}} = {ltx(k12)}$$
 
 _COEFF_KEYS = ("v4", "v2", "v1", "v0")
 
-# Names a coefficient or rhs string may use on top of the spec's own params.
-# "E" and "I" are deliberately absent: they must stay free symbols the
-# professor declares, not sympy's Euler number and imaginary unit.
-_SAFE_NAMES = (
-    "Symbol", "Integer", "Float", "Rational", "pi",
-    "sin", "cos", "tan", "exp", "log", "sqrt", "sinh", "cosh", "tanh", "Abs",
-)
-_SAFE_GLOBALS = {name: getattr(sp, name) for name in _SAFE_NAMES}
-_SAFE_GLOBALS["__builtins__"] = {}  # parse_expr eval()s its output; keep builtins away
-
 _TERM_NOTES = {
     "v4": (
         "$v''''$", "$a_4$", "bending stiffness $EI$",
@@ -233,17 +224,17 @@ _TERM_NOTES = {
 
 
 def _parse_scalar(text, field, local_dict):
-    """Parse one spec string into a sympy expression, or raise ValueError."""
+    """Parse one spec string into a sympy expression, or raise ValueError.
+
+    Parsed by tools.fem.safe_expr, the whitelist grammar the solver and the
+    manufactured-solution check both use, so the document cannot be generated
+    for an expression the solver would refuse.
+    """
     if isinstance(text, bool) or not isinstance(text, (str, int, float)):
         raise ValueError(f"{field} must be a sympy-parseable string, got {text!r}")
     try:
-        expr = parse_expr(
-            str(text),
-            local_dict=local_dict,
-            global_dict=_SAFE_GLOBALS,
-            transformations=standard_transformations,
-        )
-    except Exception as exc:  # noqa: BLE001 - sympy raises a zoo of parser errors
+        expr = parse_expression(text, local_dict=dict(local_dict))
+    except ExpressionError as exc:
         raise ValueError(f"{field} is not a valid expression: {text!r} ({exc})") from exc
     if not isinstance(expr, sp.Expr):
         raise ValueError(f"{field} must be a scalar expression, got {text!r}")
@@ -282,6 +273,8 @@ def validate_equation_spec(spec: dict) -> dict:
     label = spec.get("label", "equation")
     if not isinstance(label, str):
         raise ValueError(f"'label' must be a string, got {label!r}")
+    # printed as a heading in the generated document, so it stays one line
+    label = clean_label(label, default="equation")
 
     params = spec.get("params") or {}
     if not isinstance(params, dict):

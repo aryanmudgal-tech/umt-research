@@ -109,7 +109,11 @@ derives the load that produces it, and checks that the FEM converges to it at
 the fourth-order rate Hermite cubics promise (`tools/fem/mms.py`). It also
 checks vertical equilibrium in the form your equation implies — with a
 foundation, the reactions carry only part of the load and the soil carries the
-rest — plus stiffness symmetry and the support conditions. The classic
+rest — plus stiffness symmetry and the support conditions. It also recomputes
+`K u - F` from the displacements that were reported, which is what catches a
+result whose numbers were edited after the solve: for a beam in pure bending
+the equilibrium balance cannot see a corrupted deflection at all, because rows
+0 and 2 of every element matrix sum to zero. The classic
 closed-form comparison is added only when your equation really does reduce to
 the simply supported uniform-load Euler-Bernoulli case; otherwise that check
 reports **SKIPPED**, and a skipped check is never counted as a pass.

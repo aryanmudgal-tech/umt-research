@@ -277,7 +277,12 @@ def test_the_foundation_gate_skips_the_closed_form_rather_than_passing_it(founda
     )
     assert check_status(closed_form) == SKIPPED
     assert "manufactured solutions" in closed_form["detail"]
-    assert foundation_gate["tally"]["skipped"] == 1
+    # A skipped check is counted as skipped and never as passed. Counting the
+    # skips rather than naming a number keeps this honest when a check is added.
+    skipped = [c["name"] for c in foundation_gate["checks"] if check_status(c) == SKIPPED]
+    assert "closed_form_reference" in skipped
+    assert foundation_gate["tally"]["skipped"] == len(skipped)
+    assert foundation_gate["tally"]["passed"] == len(foundation_gate["checks"]) - len(skipped)
 
 
 def test_equilibrium_is_the_one_a_naive_reaction_sum_would_get_wrong(foundation_run):
@@ -422,7 +427,11 @@ def test_the_report_renders_a_skipped_check_as_skipped(equation_report):
     row = next(line for line in gate.splitlines() if "closed_form_reference" in line)
     assert "| SKIPPED |" in row
     assert "PASS" not in row
-    assert "4 of 5 checks passed, 1 skipped" in gate
+    counted = re.search(r"(\d+) of (\d+) checks passed, (\d+) skipped", gate)
+    assert counted, gate
+    passed, total, skipped = (int(g) for g in counted.groups())
+    assert skipped >= 1  # the closed form above is one of them
+    assert passed + skipped == total  # a skip is never folded into the passes
 
 
 # ------------------------------------ the report still renders as Markdown

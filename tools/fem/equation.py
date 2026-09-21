@@ -28,6 +28,15 @@ integrating twice turns an x-dependent a4 into the self-adjoint operator
 (a4 v'')'', which is the physically correct tapered-beam equation rather than
 a4 v''''; and the -a2 N'^T N' sign makes a POSITIVE a2 (compression) soften the
 beam, so a simply supported beam-column goes singular at P = pi^2 EI / L^2.
+
+That last sentence is also why solving is not merely a matrix inverse. With no
+a1 term the weak form is an energy, and a static equilibrium is the shape that
+MINIMIZES it — which is exactly the free stiffness matrix being positive
+definite. Past the buckling load, or with a4 non-positive anywhere along the
+span, that matrix is indefinite: the linear system still has one unique
+solution, but it is an unstable equilibrium and it points the wrong way, so a
+beam under a downward load comes back deflecting upward. Those systems are
+refused here rather than reported. See _solve_free.
 """
 
 import math
@@ -35,8 +44,10 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 
 import numpy as np
+import scipy.linalg as sla
 import sympy as sp
-from sympy.parsing.sympy_parser import parse_expr, standard_transformations
+
+from tools.fem.safe_expr import ExpressionError, clean_label, parse_expression
 
 COEFF_KEYS = ("v4", "v2", "v1", "v0")
 
@@ -46,22 +57,6 @@ X = sp.Symbol("x")  # the beam coordinate, the one name a spec may not rebind
 _EL = sp.Symbol("_L", positive=True)  # element length
 _X0 = sp.Symbol("_x0", real=True)  # global x at the element's left node
 _XI = sp.Symbol("_xi", real=True)  # local coordinate, 0 <= _xi <= _L
-
-# Parsing namespace. sympy's default globals bind E to Euler's number and I to
-# the imaginary unit, which would silently turn the professor's "E*I" into
-# e*sqrt(-1); only these names are predefined, everything else becomes a Symbol.
-_PARSE_GLOBALS = {
-    name: getattr(sp, name)
-    for name in (
-        "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh",
-        "exp", "log", "sqrt", "Abs", "Min", "Max", "sign", "Piecewise",
-    )
-}
-_PARSE_GLOBALS["pi"] = sp.pi
-# constructors the tokenizer's own transformations emit
-_PARSE_GLOBALS.update(
-    Symbol=sp.Symbol, Integer=sp.Integer, Float=sp.Float, Rational=sp.Rational, Function=sp.Function
-)
 
 _DOF_OF_LOAD = {"FY": "v", "MZ": "slope"}
 _SUPPORT_FLAG = {"v": 1, "slope": 5}  # index into the 6-flag support list
@@ -102,23 +97,12 @@ class ParsedEquation:
 
 
 def _parse(text, what):
-    """Parse one spec expression in the restricted namespace."""
-    if isinstance(text, sp.Basic):
-        return text
-    if isinstance(text, (int, float, np.integer, np.floating)):
-        return sp.Float(float(text)) if not isinstance(text, int) else sp.Integer(text)
-    if not isinstance(text, str):
-        raise EquationError(f"{what} must be a number or a sympy-parseable string, got {text!r}")
-    if "__" in text:
-        raise EquationError(f"{what} contains '__', which is not allowed: {text!r}")
+    """Parse one spec expression under tools.fem.safe_expr's whitelist grammar."""
+    if isinstance(text, (np.integer, np.floating)):
+        text = float(text)
     try:
-        return parse_expr(
-            text,
-            local_dict={"x": X},
-            global_dict=dict(_PARSE_GLOBALS),
-            transformations=standard_transformations,
-        )
-    except Exception as exc:
+        return parse_expression(text, local_dict={"x": X})
+    except ExpressionError as exc:
         raise EquationError(f"could not parse {what}: {text!r} ({exc})") from exc
 
 
@@ -177,6 +161,15 @@ def parse_spec(spec: dict) -> ParsedEquation:
             )
 
     done = {name: expr.subs(subs) for name, expr in raw.items()}
+    for name, expr in done.items():
+        # inf and nan propagate through every integral and every solve and come
+        # out the far end as a result full of nan that still looks like a result.
+        if expr.has(sp.nan, sp.oo, -sp.oo, sp.zoo):
+            where = "rhs" if name == "rhs" else f"coeffs[{name!r}]"
+            raise EquationError(
+                f"{where} evaluates to {expr}, which is not a finite number; "
+                "every parameter must be finite"
+            )
     if sp.simplify(done["v4"]) == 0:
         raise EquationError(
             "coefficient 'v4' is identically zero; the Hermite C1 element needs a "
@@ -184,7 +177,7 @@ def parse_spec(spec: dict) -> ParsedEquation:
         )
 
     return ParsedEquation(
-        label=str(spec.get("label") or "custom equation"),
+        label=clean_label(spec.get("label")),
         coeffs={k: done[k] for k in COEFF_KEYS},
         rhs=done["rhs"],
         params=dict(params),
@@ -293,6 +286,11 @@ def _elements(model):
     if elems:
         return elems
     nodes = model["nodes"]
+    if len(nodes) < 2:
+        raise EquationError(
+            f"the model has {len(nodes)} node(s); a beam needs at least two, "
+            "so that there is one element to integrate over"
+        )
     return [
         {"id": f"E{k + 1}", "i": nodes[k]["id"], "j": nodes[k + 1]["id"]}
         for k in range(len(nodes) - 1)
@@ -381,9 +379,22 @@ def _samples(model, eq, u, dof_map):
     elems = sorted(_elements(model), key=lambda e: x_of[e["i"]])
     N, N1, N2, N3 = _hermite_numeric()
 
+    # Shear is (a4 v'')' , so sampling it needs a4 to be differentiable. A
+    # coefficient built from Abs, Min, Max or sign is not: sympy leaves an
+    # unevaluated Derivative that lambdify cannot print, and the professor
+    # would get a printer traceback from deep inside sympy instead of a
+    # sentence about his equation.
     a4 = eq.coeffs["v4"]
-    a4_fn = sp.lambdify(X, a4, "numpy")
-    da4_fn = sp.lambdify(X, sp.diff(a4, X), "numpy")
+    try:
+        a4_fn = sp.lambdify(X, a4, "numpy")
+        da4_fn = sp.lambdify(X, sp.diff(a4, X), "numpy")
+    except Exception as exc:
+        raise EquationError(
+            f"coefficient 'v4' = {a4} cannot be differentiated along the span, "
+            "so the shear it implies cannot be evaluated. Functions with a "
+            "corner in them - Abs, Min, Max, sign - are not usable in v4; "
+            f"write the variation as a smooth expression in x instead ({exc})"
+        ) from exc
 
     n_per = max(3, math.ceil(20 / len(elems)) + 1)  # >= 21 samples in total
     points = []
@@ -409,6 +420,97 @@ def _samples(model, eq, u, dof_map):
     return points
 
 
+def sample_solution(model: dict, equation: dict, displacements: dict) -> list:
+    """The samples a given set of nodal displacements implies, without solving.
+
+    Same interpolation solve_equation_beam uses for its own samples, exposed so
+    a caller holding a result can ask what its displacements imply and compare.
+    It re-derives, it does not re-solve: the displacements are the input.
+
+    Args:
+        model: the beam model dict (nodes, elements, supports).
+        equation: the equation spec dict, whose v4 sets moment and shear.
+        displacements: {node_id: {"v", "slope"}}, as a result carries them.
+
+    Returns:
+        the same list of {"x", "v", "slope", "moment", "shear"} dicts.
+
+    Raises:
+        EquationError: the spec is malformed or not fully numeric.
+        KeyError: displacements is missing a node the model names.
+    """
+    eq = parse_spec(equation)
+    _require_numeric(eq)
+    nodes = model["nodes"]
+    dof_map = {
+        (n["id"], name): 2 * k + d
+        for k, n in enumerate(nodes)
+        for d, name in enumerate(("v", "slope"))
+    }
+    u = np.zeros(2 * len(nodes))
+    for node, dofs in displacements.items():
+        for name in ("v", "slope"):
+            if (node, name) in dof_map:
+                u[dof_map[(node, name)]] = float(dofs[name])
+    return _samples(model, eq, u, dof_map)
+
+
+def _solve_free(Kff, Ff, eq: ParsedEquation):
+    """Solve the free-DOF system, refusing anything that is not a stable equilibrium.
+
+    The test is that the SYMMETRIC PART of Kff is positive definite, because
+    u^T K u = u^T sym(K) u: that one condition is the energy minimum when the
+    spec is self-adjoint (no a1 term) and the coercivity that Lax-Milgram asks
+    for when it is not, so both halves of the equation family are held to it.
+    A Cholesky factorization is therefore the physics test here, not merely a
+    fast solver. It fails for an unrestrained mechanism, for an a4 that is zero
+    or negative over part of the span, for a compressive a2 at or past this
+    beam's buckling load, and for an a1 large enough to swamp the bending term.
+    Every one of those still has a unique linear solution, and every one of them
+    returns a deflection pointing the wrong way, so they are refused rather than
+    reported: a number no one can tell is wrong is worse than an error.
+
+    Refusing is right even though the system is solvable, because nothing
+    downstream could catch it. Manufactured solutions verify the element
+    matrices against a load MMS derives itself, and those matrices are correct
+    here — it is the equation that has no stable answer.
+    """
+    if Kff.shape[0] == 0:
+        return np.zeros(0)
+
+    symmetric_part = (Kff + Kff.T) / 2
+    try:
+        factor = sla.cho_factor(symmetric_part, lower=True)
+    except (np.linalg.LinAlgError, ValueError) as exc:
+        eigenvalues = np.linalg.eigvalsh(symmetric_part)
+        raise EquationError(
+            "no stable equilibrium: the symmetric part of the free stiffness "
+            f"matrix is not positive definite (smallest eigenvalue "
+            f"{eigenvalues.min():.4e}, largest {eigenvalues.max():.4e}). The "
+            "linear system may still have a unique solution, but it is an "
+            "unstable equilibrium and the deflection points the wrong way. Usual "
+            "causes: the supports leave a mechanism; coefficient v4 is zero or "
+            "negative somewhere along the span; a compressive v2 is at or past "
+            "the buckling load of this beam; or v1 is large enough to overwhelm "
+            "the bending term."
+        ) from exc
+
+    if sp.simplify(eq.coeffs["v1"]) == 0:
+        u = sla.cho_solve(factor, Ff)  # Kff is its own symmetric part
+    else:
+        try:
+            u = np.linalg.solve(Kff, Ff)
+        except np.linalg.LinAlgError as exc:
+            raise EquationError("structure is unstable: singular stiffness matrix") from exc
+
+    if not np.all(np.isfinite(u)):
+        raise EquationError(
+            "the solve produced non-finite displacements; the stiffness matrix is "
+            "numerically degenerate for this equation and mesh"
+        )
+    return u
+
+
 def solve_equation_beam(model: dict, equation: dict) -> dict:
     """Solve a beam model under a caller-supplied governing equation.
 
@@ -427,6 +529,10 @@ def solve_equation_beam(model: dict, equation: dict) -> dict:
         dict with "displacements" {node_id: {"v", "slope"}}, "reactions" at
         restrained DOFs only {node_id: {"F", "M"}}, "samples" of at least 21
         points {"x", "v", "slope", "moment", "shear"}, and "max_abs" of each.
+
+    Raises:
+        EquationError: the spec is malformed, or the free system is not a
+            stable equilibrium (see _solve_free).
     """
     eq = parse_spec(equation)
     K, F, dof_map = assemble_equation(model, eq)
@@ -435,10 +541,7 @@ def solve_equation_beam(model: dict, equation: dict) -> dict:
     free = [g for g in range(K.shape[0]) if g not in held]
 
     u = np.zeros(K.shape[0])
-    try:
-        u[free] = np.linalg.solve(K[np.ix_(free, free)], F[free])
-    except np.linalg.LinAlgError as exc:
-        raise EquationError("structure is unstable: singular stiffness matrix") from exc
+    u[free] = _solve_free(K[np.ix_(free, free)], F[free], eq)
 
     R = K @ u - F  # reactions recovered from the full, unmodified system
 

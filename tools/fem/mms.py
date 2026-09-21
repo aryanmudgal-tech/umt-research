@@ -34,30 +34,10 @@ import math
 
 import numpy as np
 import sympy as sp
-from sympy.parsing.sympy_parser import parse_expr
+
+from tools.fem.safe_expr import ExpressionError, parse_expression
 
 X = sp.Symbol("x")
-
-# What a coefficient or load expression may call; everything else must be a
-# parameter. Symbol/Integer/Float/Rational are what the parser's own
-# transformations emit, not part of the whitelist.
-_PARSE_GLOBALS = {
-    "Symbol": sp.Symbol,
-    "Integer": sp.Integer,
-    "Float": sp.Float,
-    "Rational": sp.Rational,
-    "pi": sp.pi,
-    "sin": sp.sin,
-    "cos": sp.cos,
-    "tan": sp.tan,
-    "sinh": sp.sinh,
-    "cosh": sp.cosh,
-    "tanh": sp.tanh,
-    "exp": sp.exp,
-    "log": sp.log,
-    "sqrt": sp.sqrt,
-    "Abs": sp.Abs,
-}
 
 _COEFF_KEYS = ("v4", "v2", "v1", "v0")
 _AMPLITUDE = 0.01  # peak of v* in metres; errors are relative, so this only sets scale
@@ -73,18 +53,22 @@ _ZERO = 1e-9  # relative tolerance for "this boundary term vanishes"
 def _parse(text, params):
     """Sympify a spec string in x with the parameters bound and substituted.
 
-    Parsed against a whitelist instead of sympy's default namespace, which reads
-    'E' as Euler's number and 'I' as the imaginary unit: "E*I" with E and I
-    missing from params would otherwise become 2.718...j and turn the stiffness
-    silently complex instead of raising. Any name that is neither x, a parameter
-    nor a whitelisted function stays a symbol and is reported as missing.
+    Parsed by tools.fem.safe_expr, the same whitelist grammar the solver uses,
+    so the verification cannot accept an expression the solver would refuse -
+    nor the other way round. That whitelist is also why 'E' and 'I' are not
+    sympy's Euler number and imaginary unit here: they stay free symbols until
+    params supplies them, and any name params does not supply is reported as
+    missing rather than silently turning the stiffness complex.
     """
     if isinstance(text, sp.Basic):
         expr = text
     else:
         local = {name: sp.Symbol(name) for name in params}
         local["x"] = X
-        expr = parse_expr(str(text), local_dict=local, global_dict=dict(_PARSE_GLOBALS))
+        try:
+            expr = parse_expression(text, local_dict=local)
+        except ExpressionError as exc:
+            raise ValueError(f"could not parse {text!r}: {exc}") from exc
     expr = sp.sympify(expr).subs(
         {
             sp.Symbol(name): _parse(value, {}) if isinstance(value, str) else value
@@ -295,7 +279,7 @@ def _solve(model, spec):
 
 def _observed_order(refinements, errors):
     """Least-squares slope of log(error) against log(mesh count), sign flipped."""
-    points = [(n, e) for n, e in zip(refinements, errors) if e > 0]
+    points = [(n, e) for n, e in zip(refinements, errors) if e > 0 and math.isfinite(e)]
     if len(points) < 2:
         return 0.0  # nothing to fit; the exactness branch decides the verdict
     logs_n = [math.log(n) for n, _ in points]
@@ -339,9 +323,18 @@ def mms_check(model, spec, v_expr=None, refinements=(4, 8, 16)):
     v_exact = sp.lambdify(X, v_star, "math")
 
     errors = []
+    refused = ""
     for n in refinements:
         refined = _refined_model(model, n)
-        result = _solve(refined, mms_spec)
+        try:
+            result = _solve(refined, mms_spec)
+        except Exception as exc:
+            # The solver refusing a mesh (no stable equilibrium, a degenerate
+            # matrix) is a failed verification, not a crash: MMS owes its caller
+            # a verdict, and "could not be solved" is one.
+            errors.append(math.inf)
+            refused = refused or f"the solver refused the {n}-element mesh: {exc}"
+            continue
         errors.append(
             max(
                 abs(result["displacements"][node["id"]]["v"] - v_exact(node["x"]))
@@ -354,12 +347,15 @@ def mms_check(model, spec, v_expr=None, refinements=(4, 8, 16)):
     nodally_exact = errors[-1] <= _EXACT
     passed = bool(nodally_exact or (rate >= _RATE_MIN and errors[-1] <= _TOL))
 
-    verdict = (
-        "error is at machine precision, so this scheme is nodally exact for this "
-        "equation and the convergence rate carries no information"
-        if nodally_exact
-        else f"observed order {rate:.2f}, finest relative error {errors[-1]:.3e}"
-    )
+    if refused:
+        verdict = refused
+    elif nodally_exact:
+        verdict = (
+            "error is at machine precision, so this scheme is nodally exact for "
+            "this equation and the convergence rate carries no information"
+        )
+    else:
+        verdict = f"observed order {rate:.2f}, finest relative error {errors[-1]:.3e}"
     detail = (
         f"{how}; meshes {tuple(refinements)} elements; {verdict}. "
         f"PASS rule: finest relative nodal error <= {_EXACT:g}, or observed order "

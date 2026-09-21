@@ -69,7 +69,19 @@ CHOOSING THE SOLVER - read the brief for the governing equation:
   along the beam, SI units, and DOWNWARD NEGATIVE - so a downward load of
   30 kN/m is rhs "q" with q = -30e3, and v comes out negative. A coefficient
   may depend on x. A v3 term is not supported. Leave a coefficient out or set
-  it to "0" when the brief does not call for it.
+  it to "0" when the brief does not call for it. v4 may never be zero.
+
+  WRITING THE STRINGS - they are parsed against a whitelist, and anything
+  outside it is refused rather than guessed at:
+    * arithmetic only: + - * / and ** for powers. NOT ^, which is not a power.
+    * names: x, plus every name you list in params. x is the axial coordinate
+      and is always available - never put x in params.
+    * the only callable names are sin, cos, tan, asin, acos, atan, sinh, cosh,
+      tanh, exp, log, sqrt, Abs, Min, Max, sign, and the constant pi. Any other
+      function name is an error, so express the physics with these or with a
+      polynomial in x.
+    * every symbol in a coefficient or in rhs must have a number in params, in
+      SI units. E and I are YOUR parameter names, not mathematical constants.
 
   Worked example - a 25 m beam on soil of stiffness k = 1.0e7 N/m per m,
   carrying 30 kN/m downward, E = 30 GPa, I = 0.005 m^4:

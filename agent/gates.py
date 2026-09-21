@@ -19,7 +19,13 @@ import sympy as sp
 
 from tools.fem import mms
 from tools.fem.analytical import closed_form
-from tools.fem.equation import X, assemble_equation, equilibrium_terms, parse_spec
+from tools.fem.equation import (
+    X,
+    assemble_equation,
+    equilibrium_terms,
+    parse_spec,
+    sample_solution,
+)
 from tools.fem.invariants import check_invariants
 from tools.fem.pynite_check import solve_with_pynite
 from tools.fem.solver import assemble
@@ -119,6 +125,34 @@ def detect_ss_udl(model: dict):
     }
 
 
+def _reference_check(name, fem, exact, tol, why=""):
+    """Compare a FEM magnitude with a closed-form magnitude, safely.
+
+    closed_form() documents every value it returns as a positive magnitude, so
+    the comparison divides by it. A spec or a model that makes it zero or
+    negative — a negative EI, say — would otherwise produce a NEGATIVE relative
+    error that is below every tolerance, and the check would pass on a beam
+    deflecting the wrong way. A reference that is not a positive magnitude is
+    therefore a failure, not a denominator.
+    """
+    suffix = f" ({why})" if why else ""
+    if not np.isfinite(exact) or exact <= 0:
+        return _verdict(
+            name,
+            False,
+            f"closed-form reference is {exact:.6e}, which is not a positive "
+            "magnitude; the parameters that produced it are not a physical beam, "
+            f"so no comparison was possible{suffix}",
+        )
+    rel = abs(abs(fem) - exact) / exact
+    return _verdict(
+        name,
+        rel < tol,
+        f"FEM {abs(fem):.6e} vs closed form {exact:.6e}, rel err {rel:.3e} "
+        f"against tolerance {tol:.3e}{suffix}",
+    )
+
+
 def _closed_form_checks(model, result):
     case = detect_ss_udl(model)
     if not case:
@@ -131,21 +165,14 @@ def _closed_form_checks(model, result):
             )
         ]
     ref = closed_form("ss_udl", **case)
-    rows = []
-    for name, fem, exact in (
-        ("closed_form_midspan_deflection", result["max_abs"]["uy"], ref["max_deflection"]),
-        ("closed_form_max_moment", result["max_abs"]["Mz"], ref["max_moment"]),
-        ("closed_form_end_shear", result["max_abs"]["Vy"], ref["end_shear"]),
-    ):
-        rel = abs(abs(fem) - exact) / exact
-        rows.append(
-            _verdict(
-                name,
-                rel < REL_TOL,
-                f"FEM {abs(fem):.6e} vs closed form {exact:.6e}, rel err {rel:.3e}",
-            )
+    return [
+        _reference_check(name, fem, exact, REL_TOL)
+        for name, fem, exact in (
+            ("closed_form_midspan_deflection", result["max_abs"]["uy"], ref["max_deflection"]),
+            ("closed_form_max_moment", result["max_abs"]["Mz"], ref["max_moment"]),
+            ("closed_form_end_shear", result["max_abs"]["Vy"], ref["end_shear"]),
         )
-    return rows
+    ]
 
 
 def _pynite_check(model, result):
@@ -321,6 +348,194 @@ def _equation_support_check(model, result):
     )
 
 
+def _loading_direction(model, eq):
+    """(+1, -1, why): the one direction every load on this beam acts in, or None.
+
+    Sampling the rhs is enough: f(x) is a smooth expression, and a load that
+    changes sign along the span is exactly the case this check must not claim.
+    """
+    # Only pure bending. A Winkler foundation lifts the beam either side of a
+    # point load, an axial force reverses curvature, and a large enough a1 lifts
+    # it too (that spec is not an energy problem at all) -- all of them real
+    # answers to the equation as written, so this check has nothing to say about
+    # them. Their stability is tested in tools.fem.equation._solve_free instead.
+    varying = [key for key in ("v2", "v1", "v0") if sp.simplify(eq.coeffs[key]) != 0]
+    if varying:
+        return None, (
+            f"the equation is not pure bending ({', '.join(varying)} non-zero), and "
+            "a foundation, an axial force or a first-derivative term can lift part "
+            "of a beam away from its own load"
+        )
+
+    xs = [float(n["x"]) for n in model["nodes"]]
+    f = sp.lambdify(X, eq.rhs, "math")
+    loads = [float(f(x)) for x in np.linspace(min(xs), max(xs), 41)]
+
+    point = model.get("point_loads") or []
+    if any(pl["dof"] == "MZ" and pl.get("value") for pl in point):
+        return None, "an applied moment lifts one part of a beam while pressing another"
+    loads += [float(pl.get("value") or 0.0) for pl in point if pl["dof"] == "FY"]
+
+    if any(w > 0 for w in loads) and any(w < 0 for w in loads):
+        return None, "the loads do not all act in the same direction"
+    if all(w == 0 for w in loads):
+        return None, "this beam carries no transverse load, so there is no sign to check"
+
+    # Three or more deflection restraints make a continuous beam, whose unloaded
+    # spans genuinely lift; with at most two the influence function is one-signed.
+    held = sum(1 for flags in (model.get("supports") or {}).values() if flags[1])
+    if held > 2:
+        return None, (
+            f"{held} nodes hold deflection, and an unloaded span of a continuous "
+            "beam may legitimately lift"
+        )
+    return (-1 if any(w < 0 for w in loads) else +1), ""
+
+
+def _equation_deflection_sign_check(model, equation, result):
+    """A beam must deflect the way its own load pushes it.
+
+    Not a check of what the professor meant — no solver can know that — but of
+    whether the answer is consistent with the equation he wrote. It is the check
+    that bites when the assembled system has no stable equilibrium, which is how
+    a beam comes back rising under a downward load. solve_equation_beam refuses
+    that outright for a self-adjoint spec; a spec with an a1 term has no energy
+    to test, so for those this is the only thing standing in the way.
+    """
+    try:
+        eq = parse_spec(equation)
+        direction, why = _loading_direction(model, eq)
+    except Exception as exc:
+        return _verdict("equation_deflection_sign", False, f"could not be evaluated: {exc}")
+
+    if direction is None:
+        return _check(
+            "equation_deflection_sign",
+            SKIPPED,
+            f"the sign of the deflection was not checked: {why}",
+        )
+
+    values = [p["v"] for p in result["samples"]]
+    peak = max(abs(v) for v in values) or 1.0
+    # The violation is movement AGAINST the load: for a downward load (direction
+    # -1) that is the largest positive v, for an upward one the most negative.
+    wrong_way = max(-direction * v for v in values)
+    pushed = "downward (f <= 0)" if direction < 0 else "upward (f >= 0)"
+    expected = "v <= 0" if direction < 0 else "v >= 0"
+    return _verdict(
+        "equation_deflection_sign",
+        wrong_way <= REL_TOL * peak,
+        f"every load on this beam acts {pushed}, so {expected} everywhere; "
+        f"sampled v runs [{min(values):.6e}, {max(values):.6e}] m",
+    )
+
+
+def _held_dofs(model, dof_map):
+    """Global indices the supports restrain, as _restrained does in equation.py."""
+    held = set()
+    for node, flags in (model.get("supports") or {}).items():
+        for name, flag in (("v", 1), ("slope", 5)):
+            if flags[flag] and (node, name) in dof_map:
+                held.add(dof_map[(node, name)])
+    return held
+
+
+def _equation_solution_residual_check(model, equation, result):
+    """The reported displacements must actually solve K u = F for this equation.
+
+    Nothing else in this gate reads result["displacements"] closely enough to
+    catch them being wrong. Vertical equilibrium is the weak form with w = 1,
+    and for a spec with no a0 and no a1 term - the professor's own
+    Euler-Bernoulli beam - rows 0 and 2 of every element matrix sum to zero, so
+    that balance is IDENTICALLY independent of the displacements: scaling every
+    deflection by 5% leaves the residual at zero. MMS and the symmetry check
+    never look at the result at all, and the support check only reads the
+    restrained DOFs. This check is the one that reads the numbers themselves.
+
+    R = K u - F is zero at the free DOFs when u solves the system, and equals
+    the support reaction at the held ones, so one residual tests both halves of
+    what was reported.
+    """
+    try:
+        K, F, dof_map = assemble_equation(model, equation)
+        u = np.zeros(K.shape[0])
+        for node, dofs in result["displacements"].items():
+            for name in ("v", "slope"):
+                u[dof_map[(node, name)]] = float(dofs[name])
+    except Exception as exc:
+        return _verdict(
+            "equation_solution_residual", False, f"could not be evaluated: {exc}"
+        )
+
+    R = K @ u - F
+    held = _held_dofs(model, dof_map)
+    free = [g for g in range(K.shape[0]) if g not in held]
+    scale = max(float(np.max(np.abs(F))), float(np.max(np.abs(K @ u))), 1.0)
+
+    worst_free = max((abs(R[g]) for g in free), default=0.0) / scale
+    worst_reaction, where = 0.0, "none reported"
+    for node, forces in (result.get("reactions") or {}).items():
+        for name, key in (("v", "F"), ("slope", "M")):
+            if key not in forces or (node, name) not in dof_map:
+                continue
+            gap = abs(float(forces[key]) - R[dof_map[(node, name)]]) / scale
+            if gap >= worst_reaction:
+                worst_reaction, where = gap, f"{key} at node {node}"
+
+    worst = max(worst_free, worst_reaction)
+    return _verdict(
+        "equation_solution_residual",
+        worst < REL_TOL,
+        f"scaled |K u - F| at the free DOFs is {worst_free:.3e}; the reported "
+        f"reactions differ from K u - F by at most {worst_reaction:.3e} "
+        f"({where}); tolerance {REL_TOL:g}",
+    )
+
+
+def _equation_samples_check(model, equation, result):
+    """The samples and max_abs must be the interpolation of those displacements.
+
+    The report headlines max_abs and the narrative quotes it, and for an
+    equation with no closed form nothing else compares it with anything. This
+    re-derives both from the reported nodal values: it is a consistency check
+    on what was reported, not a second opinion on the mathematics, which is
+    what MMS is for.
+    """
+    try:
+        recomputed = sample_solution(model, equation, result["displacements"])
+    except Exception as exc:
+        return _verdict("equation_samples_consistent", False, f"could not be evaluated: {exc}")
+
+    samples = result.get("samples") or []
+    if len(samples) != len(recomputed):
+        return _verdict(
+            "equation_samples_consistent",
+            False,
+            f"{len(samples)} samples reported, {len(recomputed)} implied by the "
+            "reported displacements",
+        )
+
+    worst, where = 0.0, "no samples"
+    for reported, implied in zip(samples, recomputed):
+        for key in ("x", "v", "slope", "moment", "shear"):
+            scale = max(abs(implied[key]) for implied in recomputed) or 1.0
+            gap = abs(float(reported[key]) - implied[key]) / scale
+            if gap >= worst:
+                worst, where = gap, f"{key} at x = {implied['x']:.3f} m"
+    for key, value in (result.get("max_abs") or {}).items():
+        implied = max(abs(p[key]) for p in recomputed)
+        gap = abs(float(value) - implied) / (implied or 1.0)
+        if gap >= worst:
+            worst, where = gap, f"max_abs[{key!r}]"
+
+    return _verdict(
+        "equation_samples_consistent",
+        worst < REL_TOL,
+        f"worst scaled disagreement between what was reported and what the "
+        f"reported displacements imply is {worst:.3e} ({where})",
+    )
+
+
 def _equation_mms_check(model, equation):
     """Manufactured solutions on this spec and this mesh: the general verification.
 
@@ -370,48 +585,43 @@ def _equation_closed_form_checks(model, equation, result):
         ]
     n = _n_elements(model)
     ref = closed_form("ss_udl", L=case["L"], E=case["EI"], I=1.0, q=abs(case["q"]))
-    rows = []
-    for name, fem, exact, tol, why in (
-        (
-            "closed_form_midspan_deflection",
-            result["max_abs"]["v"],
-            ref["max_deflection"],
-            max(REL_TOL, 1.0 / n**4),
-            "nodal deflections are exact for Hermite cubics",
-        ),
-        (
-            "closed_form_max_moment",
-            result["max_abs"]["moment"],
-            ref["max_moment"],
-            1.0 / n**2,
-            f"moment is O(h^2) from the element cubic on {n} elements",
-        ),
-        (
-            "closed_form_end_shear",
-            result["max_abs"]["shear"],
-            ref["end_shear"],
-            1.5 / n,
-            f"shear is O(h) from the element cubic on {n} elements",
-        ),
-    ):
-        rel = abs(abs(fem) - exact) / exact
-        rows.append(
-            _verdict(
-                name,
-                rel < tol,
-                f"FEM {abs(fem):.6e} vs closed form {exact:.6e}, rel err {rel:.3e} "
-                f"against tolerance {tol:.3e} ({why})",
-            )
+    return [
+        _reference_check(name, fem, exact, tol, why)
+        for name, fem, exact, tol, why in (
+            (
+                "closed_form_midspan_deflection",
+                result["max_abs"]["v"],
+                ref["max_deflection"],
+                max(REL_TOL, 1.0 / n**4),
+                "nodal deflections are exact for Hermite cubics",
+            ),
+            (
+                "closed_form_max_moment",
+                result["max_abs"]["moment"],
+                ref["max_moment"],
+                1.0 / n**2,
+                f"moment is O(h^2) from the element cubic on {n} elements",
+            ),
+            (
+                "closed_form_end_shear",
+                result["max_abs"]["shear"],
+                ref["end_shear"],
+                1.5 / n,
+                f"shear is O(h) from the element cubic on {n} elements",
+            ),
         )
-    return rows
+    ]
 
 
 def equation_checks(model: dict, equation: dict, result: dict) -> list:
     """Every deterministic check for a run under a caller-supplied equation."""
     checks = [
         _equation_equilibrium_check(model, equation, result),
+        _equation_solution_residual_check(model, equation, result),
+        _equation_samples_check(model, equation, result),
         _equation_symmetry_check(model, equation),
         _equation_support_check(model, result),
+        _equation_deflection_sign_check(model, equation, result),
         _equation_mms_check(model, equation),
     ]
     checks.extend(_equation_closed_form_checks(model, equation, result))

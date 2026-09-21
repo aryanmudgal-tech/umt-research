@@ -52,15 +52,37 @@ rather than silently ignored — see "What is not supported" below.
 
 Coefficients and `rhs` are strings that sympy parses. They may use:
 
-- `x`, the axial coordinate — always available, never declare it;
+- `x`, the axial coordinate — always available, and never declared in `params`
+  (a parameter called `x` is an error, not a redefinition);
 - any name you list in `params`, which is a flat map of name to number;
-- ordinary arithmetic, `**` for powers, and `sin`, `cos`, `exp`, `log`,
-  `sqrt`, `tanh`, `pi`.
+- ordinary arithmetic — `+ - * / %`, brackets, and `**` for powers. `^` is
+  **not** a power here, and writing one is an error rather than a wrong answer;
+- these functions, and no others: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,
+  `sinh`, `cosh`, `tanh`, `exp`, `log`, `sqrt`, `Abs`, `Min`, `Max`, `sign`,
+  plus the constant `pi`.
+
+That list is a whitelist, and anything outside it is refused by name — a call
+to `heaviside(x)` fails with a message listing what you may call, rather than
+quietly becoming an unknown function the solver then integrates. An expression
+is arithmetic and nothing else: no attribute access, no indexing, no strings.
+
+`Abs`, `Min`, `Max` and `sign` have corners in them, and shear is
+`(a4*v'')'`, so a `v4` built from any of them cannot be differentiated along
+the span and is refused with a message saying so. They are fine in `rhs` and in
+the other three slots, which are only ever integrated.
 
 Every symbol in a coefficient must appear in `params`. A typo like `E*Iz` when
 you declared `I` is an error naming the missing parameter, not a silent zero.
 Note that `E` and `I` mean *your* parameters, not Euler's number and the
 imaginary unit.
+
+One practical limit: the element matrices are integrated symbolically, and
+sympy is fast on polynomials in `x` and slow on some other forms. A polynomial
+taper such as `"E*I0*(1 + 2*(1 - 2*x/L)**2)"` integrates in well under a
+second; a coefficient under a square root, such as `"E*I0*sqrt(1 + x/L)"`, can
+take minutes or longer with no sign of progress. Prefer a polynomial fit of the
+stiffness you want — for a second moment of area it is an approximation either
+way.
 
 A complete file looks like this — this is `euler_bernoulli.json`:
 
@@ -216,3 +238,42 @@ The following are outside it, and the tooling will not pretend otherwise:
 Any of these is a real extension, not a config change. If your problem needs
 one, say so and it can be built — describe the equation you want and what it
 models, and the element and the verifier can be extended to match.
+
+## "No stable equilibrium" — what that error means
+
+Some equations parse, assemble, and have exactly one solution, and that
+solution is still nonsense: it is an *unstable* equilibrium, and the beam comes
+back deflecting **upwards** under a downward load. The solver refuses those
+instead of reporting them, with an error beginning `no stable equilibrium`.
+
+The test is that the symmetric part of the assembled stiffness matrix is
+positive definite. That is the energy minimum for an equation with no `v1`
+term, and the standard well-posedness condition when there is one. Four ways to
+trip it, in rough order of how often they happen:
+
+- **The supports leave a mechanism.** A single pin, or two nodes that hold
+  slope but never hold deflection, lets the beam move without straining. Hold
+  deflection at two points (or fully fix one end).
+- **`v2` is compressive and at or past the buckling load.** A simply supported
+  beam-column goes critical at `P = pi^2*E*I/L^2` — for the 25 m beam that is
+  2.37 MN. Just below it the deflection is real but enormous (it grows like
+  `1/(1 - P/P_cr)`, so 0.9 P_cr already multiplies it by ten); at it, the beam
+  buckles and no linear static answer exists. If you want the buckling load
+  itself, that is an eigenvalue problem, not this solve.
+- **`v4` is zero or negative somewhere on the span.** `E*I*(1 - 2*x/L)` looks
+  like a taper but goes negative past midspan, which is a beam with negative
+  bending stiffness. Plot your `a4` over `0 <= x <= L` before running it and
+  check it stays positive. A taper that only touches zero exactly at an end
+  point is fine.
+- **`v1` is large enough to swamp the bending term.** The `v1` term is not an
+  energy term at all, so a big one has nothing holding it stable.
+
+The error reports the smallest and largest eigenvalues, so the margin is
+visible: a smallest eigenvalue barely below zero means you are just past a
+critical point, and a large negative one means the equation is far from being a
+beam.
+
+Two related refusals in the same family: a parameter that is `inf` or `nan` is
+rejected by name rather than solved into a result full of `nan`, and a `v4`
+that is identically zero is rejected because the Hermite element then has no
+bending stiffness at all.
