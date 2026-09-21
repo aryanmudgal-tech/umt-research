@@ -21,6 +21,13 @@ deflection `v(x)`, written as a **residual**:
 a4 * v'''' + a2 * v'' + a1 * v' + a0 * v = f(x)
 ```
 
+**If your `a4` varies with `x`** — any taper or haunch — the first term is read
+as the self-adjoint operator `(a4*v'')''`, which is the physically correct
+tapered-beam equation, and **not** as `a4*v''''`. The two are the same thing
+whenever `a4` is constant, which is every prismatic beam, so the line above is
+exact for those. Worked example 2 below explains why, and the generated
+derivation says which reading your file got.
+
 - `x` runs along the beam axis, in metres from the left-hand end.
 - `v(x)` is the transverse deflection, and **downward is negative**. This is
   why the professor's own beam carries `q = -30e3`: 30 kN/m pressing down. Get
