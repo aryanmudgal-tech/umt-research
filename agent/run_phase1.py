@@ -24,7 +24,7 @@ import sympy as sp  # noqa: E402
 from google.adk.runners import InMemoryRunner  # noqa: E402
 from google.genai import types  # noqa: E402
 
-from agent.config import ORCHESTRATOR_MODELS, VERIFIER_MODELS, load_api_key, retryable_error  # noqa: E402
+from agent.config import ORCHESTRATOR_MODELS, load_api_key, retryable_error, verifier_roster  # noqa: E402
 from agent.gates import (  # noqa: E402
     check_status,
     detect_ss_udl,
@@ -448,7 +448,9 @@ def _pipeline(brief_path, brief_text, html_path, json_path, started):
     det = deterministic_gate(model_dict, result, equation)
 
     _stage("verifier")
-    verdict = run_verifier(brief_text, model_dict, result, VERIFIER_MODELS, equation=equation)
+    verdict = run_verifier(
+        brief_text, model_dict, result, verifier_roster(model_used), equation=equation
+    )
     passed = det["passed"] and not verdict["refuted"]
 
     _stage("report")
