@@ -94,8 +94,9 @@ CHOOSING THE SOLVER - read the brief for the governing equation:
   solve_with_equation reads the model's nodes, supports and point_loads only:
   the distributed load is the equation's rhs, so put it there, not in
   distributed_loads. Its results are named v, slope, moment and shear (not uy
-  and Mz). Mesh the equation path with at least 8 elements; moment and shear
-  are sampled from each element's own cubic, so a coarse mesh blurs them.
+  and Mz). Mesh the equation path with at least 20 elements: moment and shear
+  are recovered by equilibrium, but with a foundation or an axial force they
+  still inherit the deflection's mesh error, which 20 elements makes small.
 
 Process:
 - Call EXACTLY ONE solver, EXACTLY ONCE.
