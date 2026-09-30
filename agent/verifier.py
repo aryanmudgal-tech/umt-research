@@ -29,16 +29,21 @@ _INSTRUCTION = (
 )
 
 
-def pynite_crosscheck(model: dict) -> dict:
-    """Re-solve the beam model dict with PyNiteFEA, an independent FEM engine.
+def _make_pynite_tool(model):
+    # Bound, not an argument: given a model parameter, the verifier once passed
+    # its own copy with both ends fully fixed and would have checked that beam.
+    def pynite_crosscheck() -> dict:
+        """Re-solve the beam under scrutiny with PyNiteFEA, an independent FEM engine.
 
-    Args:
-        model: the beam model dict under scrutiny (SI units).
+        Takes no arguments — the model that was solved is already bound, so
+        this always checks that beam and no other.
 
-    Returns:
-        dict with displacements and reactions per node (SI units).
-    """
-    return to_plain(solve_with_pynite(model))
+        Returns:
+            dict with displacements and reactions per node (SI units).
+        """
+        return to_plain(solve_with_pynite(model))
+
+    return pynite_crosscheck
 
 
 def _make_invariants_tool(model, result):
@@ -53,6 +58,42 @@ def _make_invariants_tool(model, result):
         return to_plain(check_invariants(model, result, assemble))
 
     return run_invariant_checks
+
+
+def verifier_tools(model_dict, result, equation=None) -> list:
+    """The tools that can actually check this run.
+
+    PyNite and the invariants re-solve the standard 3D beam, so they need a
+    material, a section and 3D results. An equation run has none of those, and
+    offering them there only invites a call that fails.
+    """
+    if equation is not None:
+        return [closed_form_case]
+    return [
+        _make_pynite_tool(model_dict),
+        closed_form_case,
+        _make_invariants_tool(model_dict, result),
+    ]
+
+
+def _tool_error(tool=None, args=None, tool_context=None, error=None, **_extra):
+    """Hand a failing tool's error back to the verifier instead of ending the run.
+
+    Without this ADK re-raises, and one bad tool call crashes the whole
+    pipeline with no report and no trace.
+    """
+    return {"error": f"{type(error).__name__}: {error}", "verified": False}
+
+
+def build_verifier(name: str, tools: list) -> LlmAgent:
+    agent = LlmAgent(
+        name="verifier",
+        model=name,
+        instruction=_INSTRUCTION,
+        tools=tools,
+        on_tool_error_callback=_tool_error,
+    )
+    return attach_observers(agent, role="verifier", model=name)
 
 
 def extract_json(text: str):
@@ -116,9 +157,9 @@ _EQUATION_NOTE = (
     "\n\nNOTE: these results were NOT produced by the standard Euler-Bernoulli "
     "beam element. The governing equation above was supplied with the problem "
     "and reads a4*v'''' + a2*v'' + a1*v' + a0*v = f(x), SI units, deflection "
-    "downward negative. Your pynite_crosscheck and closed_form_case tools "
-    "assume the standard equation, so they do NOT apply here unless every one "
-    "of a2, a1 and a0 is zero: say so rather than refuting on that basis.\n"
+    "downward negative. closed_form_case assumes the standard equation, so it "
+    "does NOT apply here unless every one of a2, a1 and a0 is zero: say so "
+    "rather than refuting on that basis.\n"
 )
 
 
@@ -148,11 +189,7 @@ def run_verifier(
         '{"refuted": true|false, "checks": [{"name": "...", "passed": '
         'true|false, "detail": "..."}], "reasoning": "..."}'
     )
-    tools = [
-        pynite_crosscheck,
-        closed_form_case,
-        _make_invariants_tool(model_dict, result),
-    ]
+    tools = verifier_tools(model_dict, result, equation)
 
     last_error = None
     for name in model_names:
@@ -163,13 +200,7 @@ def run_verifier(
             role="verifier",
             model=name,
         )
-        agent = attach_observers(
-            LlmAgent(
-                name="verifier", model=name, instruction=_INSTRUCTION, tools=tools
-            ),
-            role="verifier",
-            model=name,
-        )
+        agent = build_verifier(name, tools)
         try:
             text = asyncio.run(_run_once(agent, prompt))
         except Exception as exc:
