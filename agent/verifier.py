@@ -1,8 +1,9 @@
 """Isolated adversarial verifier: fresh agent, runner and session per run.
 
 It receives ONLY the problem text and the raw numbers JSON — never
-orchestrator prose — and tries to refute the results with its own tools
-(PyNite, closed forms, physics invariants).
+orchestrator prose — and tries to refute the results with its own tools:
+PyNite, closed forms and physics invariants for a standard beam, and an
+independent collocation solve of the same equation for a custom one.
 """
 
 import asyncio
@@ -17,6 +18,7 @@ from agent.config import VERIFIER_MODELS, retryable_error
 from agent.orchestrator import closed_form_case
 from agent.recorder import to_plain
 from agent.trace import attach_observers, tracer
+from tools.fem.bvp_check import solve_equation_bvp
 from tools.fem.invariants import check_invariants
 from tools.fem.pynite_check import solve_with_pynite
 from tools.fem.solver import assemble
@@ -25,7 +27,9 @@ _INSTRUCTION = (
     "You are an adversarial verifier. You receive a problem statement and "
     "computed FEM results. Recompute independently with YOUR tools and try "
     "to REFUTE the results. Finding nothing wrong must be justified check "
-    "by check."
+    "by check. Every reference number you compare against must come from one "
+    "of your tools; do not compute reference values yourself. If a tool "
+    "returns an error, that check verified nothing: say so."
 )
 
 
@@ -60,6 +64,25 @@ def _make_invariants_tool(model, result):
     return run_invariant_checks
 
 
+def _make_equation_check_tool(model, equation):
+    def independent_equation_check() -> dict:
+        """Re-solve this beam's own equation by a different method, as a reference.
+
+        Takes no arguments — the solved model and its equation are already
+        bound. Uses collocation on the strong form (scipy solve_bvp), not the
+        Galerkin FEM that produced the results, so agreement means something.
+
+        Returns:
+            dict with "applicable" and, when it is, "converged",
+            "deflection_at_nodes", "reactions" {node: {"F", "M"}}, "midspan"
+            {"x", "v"} and "max_abs" {"v", "moment", "shear": {"value", "x"}}.
+            SI units, deflection downward negative.
+        """
+        return to_plain(solve_equation_bvp(model, equation))
+
+    return independent_equation_check
+
+
 def verifier_tools(model_dict, result, equation=None) -> list:
     """The tools that can actually check this run.
 
@@ -68,7 +91,7 @@ def verifier_tools(model_dict, result, equation=None) -> list:
     offering them there only invites a call that fails.
     """
     if equation is not None:
-        return [closed_form_case]
+        return [_make_equation_check_tool(model_dict, equation), closed_form_case]
     return [
         _make_pynite_tool(model_dict),
         closed_form_case,
@@ -157,9 +180,12 @@ _EQUATION_NOTE = (
     "\n\nNOTE: these results were NOT produced by the standard Euler-Bernoulli "
     "beam element. The governing equation above was supplied with the problem "
     "and reads a4*v'''' + a2*v'' + a1*v' + a0*v = f(x), SI units, deflection "
-    "downward negative. closed_form_case assumes the standard equation, so it "
-    "does NOT apply here unless every one of a2, a1 and a0 is zero: say so "
-    "rather than refuting on that basis.\n"
+    "downward negative. Call independent_equation_check: it solves this same "
+    "equation by collocation instead of FEM. Compare against it every quantity "
+    "the problem statement asks for, and every max_abs value in the results. "
+    "closed_form_case assumes the standard equation, so it does NOT apply here "
+    "unless every one of a2, a1 and a0 is zero: say so rather than refuting on "
+    "that basis.\n"
 )
 
 

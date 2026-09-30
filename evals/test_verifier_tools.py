@@ -90,3 +90,32 @@ def test_a_failing_tool_is_handed_back_to_the_verifier_not_raised():
 
     assert out["verified"] is False
     assert "KeyError" in out["error"] and "material" in out["error"]
+
+
+def test_equation_path_gets_the_independent_check_bound_to_the_solved_model():
+    from tools.fem.bvp_check import solve_equation_bvp
+
+    model = equation_model()
+    check = next(
+        t
+        for t in verifier_module.verifier_tools(model, {}, WINKLER)
+        if t.__name__ == "independent_equation_check"
+    )
+
+    assert inspect.signature(check).parameters == {}
+    assert check() == to_plain(solve_equation_bvp(model, WINKLER))
+
+
+def test_the_verifier_is_told_to_take_reference_numbers_from_its_tools(monkeypatch):
+    prompts = []
+
+    async def capture(agent, prompt):
+        prompts.append((agent.instruction, prompt))
+        return '{"refuted": false, "checks": [], "reasoning": ""}'
+
+    monkeypatch.setattr(verifier_module, "_run_once", capture)
+    verifier_module.run_verifier("brief", equation_model(), {}, ["m"], equation=WINKLER)
+
+    instruction, prompt = prompts[0]
+    assert "independent_equation_check" in prompt
+    assert "do not compute reference values yourself" in instruction
