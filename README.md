@@ -129,9 +129,13 @@ reports **SKIPPED**, and a skipped check is never counted as a pass.
   dependence, and 2D/3D behaviour (torsion, axial extension, out-of-plane
   bending). `solve_with_equation` solves one linear ODE in the transverse
   deflection of a single beam axis; anything else still needs `solve_beam_3d`.
-- Mesh advice: moment and shear are sampled from each element's own cubic, so
-  they carry O(h²) and O(h) error. Use at least 8 elements on the equation
-  path, more if the shear diagram matters.
+- Mesh advice: moment and shear are recovered by equilibrium from each
+  element's end forces, so the support shear equals the reaction, a pin holds
+  no moment, and nothing jumps at an unloaded node on any mesh. With a
+  foundation or an axial force they still inherit the deflection's mesh
+  error — on the 25 m beam on soil the peak moment is 0.2 % off at 10
+  elements and 0.01 % at 20 — so use at least 20 elements on the equation
+  path.
 
 ## Layout
 

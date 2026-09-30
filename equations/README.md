@@ -73,10 +73,12 @@ to `heaviside(x)` fails with a message listing what you may call, rather than
 quietly becoming an unknown function the solver then integrates. An expression
 is arithmetic and nothing else: no attribute access, no indexing, no strings.
 
-`Abs`, `Min`, `Max` and `sign` have corners in them, and shear is
-`(a4*v'')'`, so a `v4` built from any of them cannot be differentiated along
-the span and is refused with a message saying so. They are fine in `rhs` and in
-the other three slots, which are only ever integrated.
+`Abs`, `Min`, `Max` and `sign` have corners in them. They are fine in `rhs`
+and in the `v2`, `v1` and `v0` slots, which are only ever integrated. In `v4`
+a corner is fine too if it sits on a node: moment and shear are recovered by
+equilibrium, so nothing differentiates `v4`. A corner *inside* an element is
+refused, because no quadrature rule integrates across it reliably, and the
+message names the element — put a node there.
 
 Every symbol in a coefficient must appear in `params`. A typo like `E*Iz` when
 you declared `I` is an error naming the missing parameter, not a silent zero.
