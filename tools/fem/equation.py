@@ -698,72 +698,132 @@ def _restrained(model, dof_map):
     return sorted(held)
 
 
-def _a4_callables(eq: ParsedEquation):
-    """(a4(x), a4'(x)) as numpy callables, refusing a v4 that has a corner in it.
+# Moment and shear are RECOVERED BY EQUILIBRIUM, not read off the cubic.
+#
+# Read off the cubic, moment = a4 v'' is a straight line on each element and
+# shear = (a4 v'')' a constant: the support shear came out as the average over
+# the first element, the moment at a pin was not zero, and both jumped at every
+# node. On the 25 m beam on soil at 20 elements that put the maximum shear 39 %
+# low beside a correct reaction in the same report.
+#
+# Instead, each element's end forces are q = k_e d - f_e, and the equation is
+# integrated across it. With T = (a4 v'')' + a2 v' the transverse force and
+# m = a4 v'' the moment, the residual gives
+#
+#     T' = f - a1 v' - a0 v          m' = T - a2 v'
+#
+# starting from T(0) = q[0] and m(0) = -q[1]. For the Galerkin solution this
+# lands EXACTLY on the other end's q[2] and q[3] (take w = 1 and w = s in the
+# element's weak form), so the support shear is the reaction, a pin carries no
+# moment and an unloaded node has no jump, all by construction. Only v and v'
+# come from the cubic, and those it gets right to O(h^4). Nothing
+# differentiates a4, so a4 may have a corner.
 
-    Shear is (a4 v'')' , so reading it off the element interpolation needs a4
-    to be differentiable. A coefficient built from Abs, Min, Max or sign is
-    not: sympy leaves an unevaluated Derivative that lambdify cannot print, and
-    the professor would get a printer traceback from deep inside sympy instead
-    of a sentence about his equation.
+# Points per element on which moment and shear are recovered and their peak is
+# looked for. Deflection and slope are polynomials on the element, so their
+# extrema are solved for exactly; moment and shear carry the equation's
+# coefficients, which need not be polynomial, so their peak is found by
+# looking. 51 points is 50 intervals: the scan brackets an extremum to within
+# h/100, and a smooth field is flat at its peak, so the height it misses by
+# falls as the square of the spacing.
+PEAK_SCAN_POINTS = 51
+
+# Gauss-Legendre points on each of those intervals for the equilibrium
+# integrals. The integrands are f - a1 v' - a0 v and its first moment, degree
+# 4 plus the coefficients' own for a polynomial spec; 8 points are exact to
+# degree 15.
+RECOVERY_GAUSS_POINTS = 8
+
+
+def _samples_per_element(n_elements):
+    return max(3, math.ceil(20 / n_elements) + 1)  # >= 21 samples in total
+
+
+def _recovery_grid(L, n_per):
+    """The scan points on one element, with the sample points every stride-th.
+
+    The samples are a strided subset of the scan, so each sample's moment and
+    shear are the scan's own numbers and no sample can exceed the peak.
     """
-    a4 = eq.coeffs["v4"]
-    try:
-        return sp.lambdify(X, a4, "numpy"), sp.lambdify(X, sp.diff(a4, X), "numpy")
-    except Exception as exc:
-        raise EquationError(
-            f"coefficient 'v4' = {a4} cannot be differentiated along the span, "
-            "so the shear it implies cannot be evaluated. Functions with a "
-            "corner in them - Abs, Min, Max, sign - are not usable in v4; "
-            f"write the variation as a smooth expression in x instead ({exc})"
-        ) from exc
+    per = n_per - 1
+    stride = math.ceil((PEAK_SCAN_POINTS - 1) / per)
+    return np.linspace(0.0, L, per * stride + 1), stride
+
+
+def _recovery_fields(eq: ParsedEquation):
+    return tuple(_along_x(e) for e in (eq.rhs, eq.coeffs["v0"], eq.coeffs["v1"], eq.coeffs["v2"]))
+
+
+def _recover_forces(fields, x0, L, d, k_e, f_e, s):
+    """(moment, shear) at local points s, ascending from 0 to L, by equilibrium.
+
+    shear is (a4 v'')' = T - a2 v', the derivative of the moment, as before;
+    at a support the vertical force the reaction balances is T.
+    """
+    f, a0, a1, a2 = fields
+    N_, N1_, _, _ = _hermite_numeric()
+    q = k_e @ d - f_e
+
+    gx, gw = _leggauss(RECOVERY_GAUSS_POINTS)
+    lo, hi = s[:-1], s[1:]
+    h = hi - lo
+    t = lo[:, None] + (gx[None, :] + 1.0) * h[:, None] / 2.0
+    w = gw[None, :] * h[:, None] / 2.0
+    flat = t.ravel()
+    xs = x0 + flat
+    v = d @ _shape_values(N_, flat, L)
+    dv = d @ _shape_values(N1_, flat, L)
+    g = (f(xs) - a1(xs) * dv - a0(xs) * v).reshape(t.shape)
+    axial = (a2(xs) * dv).reshape(t.shape)
+
+    T = np.empty(s.size)
+    m = np.empty(s.size)
+    T[0], m[0] = q[0], -q[1]
+    T[1:] = q[0] + np.cumsum((w * g).sum(axis=1))
+    # m(hi) = m(lo) + h T(lo) + integral of (hi - t) g - integral of a2 v'
+    step = h * T[:-1] + (w * (hi[:, None] - t) * g).sum(axis=1) - (w * axial).sum(axis=1)
+    m[1:] = m[0] + np.cumsum(step)
+    # the far end from its own end forces, which the integral reproduces to
+    # rounding: an unloaded node then matches its neighbour bit for bit
+    T[-1], m[-1] = -q[2], q[3]
+
+    shear = T - a2(x0 + s) * (d @ _shape_values(N1_, s, L))
+    return m, shear
+
+
+def _element_profiles(model, eq, u, dof_map):
+    """Per element, in order of x: (x0, L, d, s, stride, moment, shear) on the scan grid."""
+    x_of = {n["id"]: float(n["x"]) for n in model["nodes"]}
+    elems = sorted(_elements(model), key=lambda e: x_of[e["i"]])
+    evaluate = _element_rule(eq)[0]
+    fields = _recovery_fields(eq)
+    n_per = _samples_per_element(len(elems))
+    for e in elems:
+        x0 = x_of[e["i"]]
+        L = x_of[e["j"]] - x0
+        d = u[_dof_indices(e, dof_map)]
+        k_e, f_e = evaluate(L, x0)
+        s, stride = _recovery_grid(L, n_per)
+        moment, shear = _recover_forces(fields, x0, L, d, k_e, f_e, s)
+        yield x0, L, d, s, stride, moment, shear
 
 
 def _samples(model, eq, u, dof_map):
-    """Sample v, slope, moment and shear along each element's own cubic."""
-    x_of = {n["id"]: float(n["x"]) for n in model["nodes"]}
-    elems = sorted(_elements(model), key=lambda e: x_of[e["i"]])
-    N, N1, N2, N3 = _hermite_numeric()
-    a4_fn, da4_fn = _a4_callables(eq)
-
-    n_per = max(3, math.ceil(20 / len(elems)) + 1)  # >= 21 samples in total
+    """Sample v, slope, moment and shear along the beam, element by element."""
+    N, N1, _, _ = _hermite_numeric()
     points = []
-    for e in elems:
-        L = x_of[e["j"]] - x_of[e["i"]]
-        d = u[_dof_indices(e, dof_map)]
-        for s in np.linspace(0.0, L, n_per):
-            x = x_of[e["i"]] + s
-            v2 = float(np.dot(N2(s, L), d))
-            v3 = float(np.dot(N3(s, L), d))
-            EI = float(a4_fn(x))
+    for x0, L, d, s, stride, moment, shear in _element_profiles(model, eq, u, dof_map):
+        for k in range(0, s.size, stride):
             points.append(
                 {
-                    "x": float(x),
-                    "v": float(np.dot(N(s, L), d)),
-                    "slope": float(np.dot(N1(s, L), d)),
-                    "moment": EI * v2,
-                    "shear": float(da4_fn(x)) * v2 + EI * v3,
+                    "x": float(x0 + s[k]),
+                    "v": float(np.dot(N(s[k], L), d)),
+                    "slope": float(np.dot(N1(s[k], L), d)),
+                    "moment": float(moment[k]),
+                    "shear": float(shear[k]),
                 }
             )
     return points
-
-
-# Points per element for the dense scan that reports peak moment and shear.
-# Deflection and slope are polynomials on the element, so their extrema are
-# solved for exactly; moment and shear carry a4(x), which need not be a
-# polynomial at all, so the only way to find their peak is to look. 51 points
-# is 50 intervals: the scan brackets an extremum to within h/100, and a smooth
-# field is flat at its peak, so the height it misses by falls as the square of
-# the spacing - of order 1/2500 of the element's own O(h^2) moment error.
-# Looking more finely than the interpolation is right would only cost time.
-PEAK_SCAN_POINTS = 51
-
-# A v4 that does NOT vary along the span leaves moment = a4 v'' linear on the
-# element and shear = a4 v''' constant, so both take their largest value at an
-# end and there is nothing between the ends to find. Scanning one anyway costs
-# the professor's own prismatic beam about five times its solve time and
-# returns, of necessity, the endpoint value it already had.
-FLAT_SCAN_POINTS = 2
 
 # A stationary point this far (relative to the element length) from a node is
 # treated as being at the node. At a billionth of an element the height between
@@ -811,25 +871,18 @@ def _peaks(model, eq, u, dof_map):
     converging.
 
     Deflection is a cubic on each element and slope is its derivative, so their
-    extrema are located exactly, as the roots of a quadratic and of a line.
-    Moment and shear carry a4(x), which need not be polynomial, so those two
-    are scanned at PEAK_SCAN_POINTS per element instead - unless a4 is the same
-    everywhere, which leaves them a line and a constant, whose ends are all
-    there is to look at (FLAT_SCAN_POINTS). Every candidate is read back
-    through the same shape functions the samples use, which is what keeps a
-    peak sitting on a node equal to that node's value to the last bit.
+    extrema are located exactly, as the roots of a quadratic and of a line,
+    and read back through the same shape functions the samples use, which is
+    what keeps a peak sitting on a node equal to that node's value to the last
+    bit. Moment and shear are recovered by equilibrium on PEAK_SCAN_POINTS per
+    element, the grid the samples are a subset of, and their peak is the
+    largest value on it.
     """
-    x_of = {n["id"]: float(n["x"]) for n in model["nodes"]}
-    elems = sorted(_elements(model), key=lambda e: x_of[e["i"]])
-    N, N1, N2, N3 = _hermite_numeric()
-    a4_fn, da4_fn = _a4_callables(eq)
+    N, N1, _, _ = _hermite_numeric()
     powers_of = _hermite_powers()
-    scan = PEAK_SCAN_POINTS if X in eq.coeffs["v4"].free_symbols else FLAT_SCAN_POINTS
 
     peaks = {key: 0.0 for key in ("v", "slope", "moment", "shear")}
-    for e in elems:
-        L = x_of[e["j"]] - x_of[e["i"]]
-        d = u[_dof_indices(e, dof_map)]
+    for _x0, L, d, _s, _stride, moment, shear in _element_profiles(model, eq, u, dof_map):
         cubic = np.asarray(powers_of(L), dtype=float) @ d  # ascending powers of xi
         slope_poly = np.polyder(cubic[::-1])[::-1]
 
@@ -837,13 +890,8 @@ def _peaks(model, eq, u, dof_map):
             for s in (0.0, L, *_stationary_points(coeffs, L)):
                 peaks[key] = max(peaks[key], abs(float(np.dot(basis(s, L), d))))
 
-        for s in np.linspace(0.0, L, scan):
-            x = x_of[e["i"]] + s
-            v2 = float(np.dot(N2(s, L), d))
-            v3 = float(np.dot(N3(s, L), d))
-            EI = float(a4_fn(x))
-            peaks["moment"] = max(peaks["moment"], abs(EI * v2))
-            peaks["shear"] = max(peaks["shear"], abs(float(da4_fn(x)) * v2 + EI * v3))
+        peaks["moment"] = max(peaks["moment"], float(np.max(np.abs(moment))))
+        peaks["shear"] = max(peaks["shear"], float(np.max(np.abs(shear))))
     return peaks
 
 

@@ -227,14 +227,25 @@ def test_a_legitimate_coefficient_still_solves(text):
     assert result["max_abs"]["v"] > 0
 
 
-def test_a_corner_in_v4_is_refused_in_the_professors_words():
-    """Shear is (a4 v'')', so a v4 with a corner in it cannot be sampled. Before
-    this was caught it surfaced as a sympy code-printer traceback."""
-    spec = spec_with(v4="E*I*(2 + Abs(x - 12.5)/L)")
+def test_a_corner_in_v4_on_a_node_solves_with_the_right_moment():
+    """Shear used to be (a4 v'')', which a corner in v4 cannot be differentiated
+    for, so this was refused. Moment and shear are now recovered by equilibrium
+    and nothing differentiates a4. The beam is statically determinate, so the
+    moment is q(x^2 - Lx)/2 whatever the stiffness does."""
+    result = solve_equation_beam(beam(8), spec_with(v4="E*I*(2 + Abs(x - 12.5)/L)"))
+    q, span = PARAMS["q"], 25.0
+    for p in result["samples"]:
+        exact = q * (p["x"] ** 2 - span * p["x"]) / 2
+        assert p["moment"] == pytest.approx(exact, abs=1e-9 * abs(q) * span**2 / 8)
+
+
+def test_a_corner_in_v4_inside_an_element_is_refused_in_the_professors_words():
+    """No quadrature rule integrates across a corner reliably; the self-check
+    says so, naming the coefficient and the element, instead of guessing."""
     with pytest.raises(EquationError) as exc:
-        solve_equation_beam(beam(), spec)
+        solve_equation_beam(beam(7), spec_with(v4="E*I*(2 + Abs(x - 12.5)/L)"))
     assert "v4" in str(exc.value)
-    assert "Abs" in str(exc.value)
+    assert "10.71" in str(exc.value)  # the element the corner sits in
 
 
 def test_the_same_corner_is_fine_on_the_load_side():

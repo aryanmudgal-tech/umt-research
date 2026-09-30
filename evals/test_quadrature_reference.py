@@ -234,23 +234,22 @@ def moment_error(v4, n_elem):
 @pytest.mark.parametrize(
     "v4", [CONSTANT, LINEAR, SQRT, "E*I0*exp(x/L)", "E*I0*(1 + x/L)**1.5"]
 )
-def test_the_moment_converges_to_the_statically_determinate_one_for_every_taper(v4):
+def test_the_moment_is_the_statically_determinate_one_for_every_taper(v4):
     """M(x) = q(x^2 - Lx)/2, whatever EI does along the span, because M'' = q fixes it.
 
     The gate's closed-form checks skip a tapered beam, so this is the one
     external number a taper can still be held to, and it is independent of the
-    element matrices: they can only get it wrong, never define it. Moment is
-    EI v'', two derivatives down from the displacement, so it converges at
-    O(h^2) rather than O(h^4) and needs a mesh before it means anything.
+    element matrices: they can only get it wrong, never define it. Read off
+    the cubic as EI v'' the moment converged at O(h^2), 1e-3 at 64 elements.
+    Recovered by equilibrium it is exact to rounding on any mesh: the end
+    forces of a statically determinate beam are exact, and M'' = q is
+    integrated across each element exactly.
     """
-    coarse, fine = moment_error(v4, 16), moment_error(v4, 64)
-
-    assert fine < 1e-3, (coarse, fine)
-    # O(h^2) over a 4x refinement is a factor of 16; every taper here lands
-    # between 15 and 16, so 12 is a floor rather than a fitted threshold.
-    assert coarse / fine > 12, (coarse, fine)
+    for n_elem in (1, 4, 16, 64):
+        assert moment_error(v4, n_elem) < 1e-9, n_elem
 
 
 def test_the_moment_of_a_quadrature_taper_is_as_good_as_a_symbolic_one():
-    """The same statement as above, made as a comparison rather than a tolerance."""
-    assert moment_error(SQRT, 64) < 2 * moment_error(CONSTANT, 64)
+    """The same statement as above, for the two ways the matrices get integrated."""
+    assert moment_error(SQRT, 64) < 1e-9
+    assert moment_error(CONSTANT, 64) < 1e-9
