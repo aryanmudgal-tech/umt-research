@@ -595,10 +595,11 @@ def _equation_closed_form_checks(model, equation, result):
     """The textbook comparison, but only where a textbook answer exists.
 
     Nodal deflections are exact for this element family, so the deflection is
-    compared tightly. Moment and shear are sampled from each element's own
-    cubic, whose third derivative is constant per element: that costs O(h^2)
-    on moment and O(h) on shear, so those two are compared against the bound
-    the mesh itself sets rather than pretending to machine precision.
+    compared tightly. Moment and shear are recovered by equilibrium from the
+    element end forces, which are exact for a statically determinate beam, and
+    the uniform load is integrated across each element exactly, so they are
+    held to the same tolerance. (Read off the element cubic they carried O(h^2)
+    and O(h) error, and the tolerance used to be that error.)
     """
     case = detect_ss_udl_equation(model, equation)
     if case is None:
@@ -628,15 +629,15 @@ def _equation_closed_form_checks(model, equation, result):
                 "closed_form_max_moment",
                 result["max_abs"]["moment"],
                 ref["max_moment"],
-                1.0 / n**2,
-                f"moment is O(h^2) from the element cubic on {n} elements",
+                REL_TOL,
+                "moment is recovered by equilibrium, exact for this case on any mesh",
             ),
             (
                 "closed_form_end_shear",
                 result["max_abs"]["shear"],
                 ref["end_shear"],
-                1.5 / n,
-                f"shear is O(h) from the element cubic on {n} elements",
+                REL_TOL,
+                "shear is recovered by equilibrium, exact for this case on any mesh",
             ),
         )
     ]

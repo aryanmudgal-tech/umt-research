@@ -307,6 +307,25 @@ def test_a_spec_that_reduces_to_euler_bernoulli_gets_the_closed_form_too():
     recorder.reset()
 
 
+@pytest.mark.parametrize("key, check", [("moment", "closed_form_max_moment"), ("shear", "closed_form_end_shear")])
+def test_the_closed_form_holds_moment_and_shear_as_tightly_as_deflection(key, check):
+    """Recovered by equilibrium they are exact here, so 1 % off is a failure.
+
+    The tolerance used to be the old cubic reading's own error, 1/n^2 on moment
+    and 1.5/n on shear - 1.6 % and 19 % at 8 elements - wide enough to pass the
+    very error the recovery removes.
+    """
+    model = equation_model()
+    result = solve_with_equation(model, EULER_BERNOULLI)
+    exact = deterministic_gate(model, result, EULER_BERNOULLI)
+    assert {c["name"]: check_status(c) for c in exact["checks"]}[check] == PASS
+
+    result["max_abs"][key] *= 1.01
+    off = deterministic_gate(model, result, EULER_BERNOULLI)
+    assert {c["name"]: check_status(c) for c in off["checks"]}[check] == FAIL
+    recorder.reset()
+
+
 def test_a_beam_column_skips_only_the_closed_form():
     model = equation_model()
     beam_column = spec("beam_column")
