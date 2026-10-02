@@ -287,3 +287,33 @@ def test_unknown_runs_cannot_be_changed(tmp_path, method):
     client, _, _ = make_client(tmp_path)
     kwargs = {"json": {"title": "x"}} if method == "patch" else {}
     assert getattr(client, method)("/api/runs/20261002-000000-abcdef", **kwargs).status_code == 404
+
+
+# ------------------------------------------------- how the answer was reached
+
+
+def test_a_finished_run_tells_how_its_answer_was_reached(tmp_path):
+    client, _, _ = make_client(tmp_path)
+    run_id = submit(client)[1][0]["run_id"]
+
+    story = client.get(f"/api/runs/{run_id}/story").json()
+    keys = [s["key"] for s in story["steps"]]
+    assert keys[0] == "reading" and keys[-1] == "report"
+    assert "checking" in keys and "independent" in keys
+    assert story["outcome"]["status"] == "passed"
+
+
+def test_a_refused_run_still_tells_its_story(tmp_path):
+    pipeline = replaying_pipeline(code=2, narrative="CANNOT SOLVE: the equation has a third-derivative term.", events=[])
+    client, _, _ = make_client(tmp_path, pipeline=pipeline)
+    run_id = submit(client)[1][0]["run_id"]
+    story = client.get(f"/api/runs/{run_id}/story").json()
+    assert story["steps"][-1]["key"] == "stopped"
+    assert story["steps"][-1]["summary"] == "The equation has a third-derivative term."
+
+
+def test_a_run_without_a_trace_has_no_story(tmp_path):
+    client, store, _ = make_client(tmp_path)
+    run_id = store.start_run("no trace")
+    store.finish_run(run_id, "error", message="x")
+    assert client.get(f"/api/runs/{run_id}/story").status_code == 404

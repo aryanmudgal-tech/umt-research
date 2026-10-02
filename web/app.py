@@ -38,6 +38,7 @@ from agent.orchestrator import refusal_reason
 from agent.trace import tracer
 from web.narrator import Narrator, plain_check_name
 from web.storage import GCSStore, LocalStore, valid_run_id
+from web.story import build_story
 
 log = logging.getLogger("web")
 
@@ -303,6 +304,14 @@ def create_app(store=None, pipeline=None, render_pdf=None, daily_cap=None, load_
             data, media_type=media_type,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    @app.get("/api/runs/{run_id}/story")
+    def run_story(run_id: str):
+        meta = meta_or_404(run_id)
+        trace = runs.store.get(run_id, "trace.json")
+        if trace is None:
+            raise HTTPException(404, "This run has no record of its steps.")
+        return build_story(json.loads(trace), meta)
 
     @app.patch("/api/runs/{run_id}")
     def rename_run(run_id: str, title: str = Body(..., embed=True)):
