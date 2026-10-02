@@ -861,7 +861,34 @@ def _stationary_points(coeffs, L):
     return inside
 
 
+def deflection_at(model: dict, displacements: dict, x: float) -> float:
+    """The deflection the solved nodal values imply at x, anywhere on the beam.
+
+    At a node it is that node's value exactly; between nodes it is the
+    element's Hermite cubic, the same interpolation the solver reports.
+    displacements maps node id to {"v", "slope"}.
+    """
+    x = float(x)
+    nodes = sorted(model["nodes"], key=lambda n: n["x"])
+    span = float(nodes[-1]["x"]) - float(nodes[0]["x"])
+    for n in nodes:
+        if abs(float(n["x"]) - x) <= 1e-12 * max(span, 1.0):
+            return float(displacements[n["id"]]["v"])
+    x_of = {n["id"]: float(n["x"]) for n in nodes}
+    N = _hermite_numeric()[0]
+    for e in sorted(_elements(model), key=lambda e: x_of[e["i"]]):
+        x0, x1 = x_of[e["i"]], x_of[e["j"]]
+        if x0 <= x <= x1:
+            d = np.array([displacements[e[k]][name] for k in ("i", "j") for name in ("v", "slope")])
+            return float(np.dot(N(x - x0, x1 - x0), d))
+    raise ValueError(f"x = {x} is outside the beam [{nodes[0]['x']}, {nodes[-1]['x']}]")
+
+
 def _peaks(model, eq, u, dof_map):
+    return _peaks_and_where(model, eq, u, dof_map)[0]
+
+
+def _peaks_and_where(model, eq, u, dof_map):
     """The largest |v|, |slope|, |moment| and |shear| ANYWHERE on the solution.
 
     Not the largest sample. A peak that falls between two samples is invisible
@@ -882,17 +909,28 @@ def _peaks(model, eq, u, dof_map):
     powers_of = _hermite_powers()
 
     peaks = {key: 0.0 for key in ("v", "slope", "moment", "shear")}
-    for _x0, L, d, _s, _stride, moment, shear in _element_profiles(model, eq, u, dof_map):
+    where = {key: None for key in peaks}
+
+    def offer(key, value, x):
+        # the location is the first, from the left, where the peak is reached:
+        # a symmetric beam's mirror-image peak differs only in rounding
+        if where[key] is None or value > peaks[key] * (1 + 1e-9):
+            where[key] = float(x)
+        peaks[key] = max(peaks[key], value)
+
+    for x0, L, d, s_grid, _stride, moment, shear in _element_profiles(model, eq, u, dof_map):
         cubic = np.asarray(powers_of(L), dtype=float) @ d  # ascending powers of xi
         slope_poly = np.polyder(cubic[::-1])[::-1]
 
         for key, basis, coeffs in (("v", N, cubic), ("slope", N1, slope_poly)):
             for s in (0.0, L, *_stationary_points(coeffs, L)):
-                peaks[key] = max(peaks[key], abs(float(np.dot(basis(s, L), d))))
+                offer(key, abs(float(np.dot(basis(s, L), d))), x0 + s)
 
-        peaks["moment"] = max(peaks["moment"], float(np.max(np.abs(moment))))
-        peaks["shear"] = max(peaks["shear"], float(np.max(np.abs(shear))))
-    return peaks
+        k = int(np.argmax(np.abs(moment)))
+        offer("moment", float(abs(moment[k])), x0 + s_grid[k])
+        k = int(np.argmax(np.abs(shear)))
+        offer("shear", float(abs(shear[k])), x0 + s_grid[k])
+    return peaks, where
 
 
 def _restate(model, equation, displacements):
@@ -1035,7 +1073,8 @@ def solve_equation_beam(model: dict, equation: dict) -> dict:
         restrained DOFs only {node_id: {"F", "M"}}, "samples" of at least 21
         points {"x", "v", "slope", "moment", "shear"}, "max_abs" — the largest
         absolute value each of those four reaches ANYWHERE along the beam,
-        which is in general not one of the samples — and "integration",
+        which is in general not one of the samples — "peak_x", the x at which
+        each of those four peaks, and "integration",
         {"method", "points", "reason"}, saying whether the element entries are
         exact or numerical, and why.
 
@@ -1074,13 +1113,14 @@ def solve_equation_beam(model: dict, equation: dict) -> dict:
             reactions[node] = out
 
     samples = _samples(model, eq, u, dof_map)
-    max_abs = _peaks(model, eq, u, dof_map)
+    max_abs, peak_x = _peaks_and_where(model, eq, u, dof_map)
 
     return {
         "displacements": displacements,
         "reactions": reactions,
         "samples": samples,
         "max_abs": max_abs,
+        "peak_x": peak_x,
         # copied so a caller holding the result cannot edit the cached record
         "integration": dict(integration),
     }

@@ -35,6 +35,7 @@ from agent.gates import (  # noqa: E402
     tally,
 )
 from agent.jsonfmt import compact_json  # noqa: E402
+from agent.key_results import key_results, key_results_markdown  # noqa: E402
 from agent.live_view import attach_live_view  # noqa: E402
 from agent.orchestrator import build_orchestrator  # noqa: E402
 from agent.recorder import recorder, to_plain  # noqa: E402
@@ -304,6 +305,10 @@ def write_report(
         _nest(brief_text.strip()),
         "",
     ]
+    try:
+        lines += [key_results_markdown(key_results(model_dict, result, equation))]
+    except Exception as exc:  # a report without the summary beats no report
+        lines += ["## Key results", "", f"The key results could not be extracted: {exc}", ""]
     if equation is not None:
         lines += _equation_section(equation, result)
     else:
