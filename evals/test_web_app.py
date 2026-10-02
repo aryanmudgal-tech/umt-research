@@ -79,7 +79,7 @@ def test_a_run_streams_six_stages_then_the_result(tmp_path):
     assert finished == {"reading", "modeling", "solving", "checking", "independent", "report"}
     result = lines[-1]
     assert result["kind"] == "result" and result["status"] == "passed"
-    assert "Verified" in result["message"]
+    assert result["message"] == "Every check passed and the independent check agrees."
 
 
 def test_a_run_is_saved_with_its_report_pdf_and_trace(tmp_path):
@@ -94,6 +94,19 @@ def test_a_run_is_saved_with_its_report_pdf_and_trace(tmp_path):
     meta = store.read_meta(run_id)
     assert meta["status"] == "passed" and meta["title"] == "25 m beam on soil"
     assert meta["duration_s"] >= 0
+    assert meta["has_pdf"] is True
+
+
+def test_a_failed_pdf_still_leaves_a_report(tmp_path):
+    def broken_pdf(report_md, title):
+        raise RuntimeError("chromium missing")
+
+    store = LocalStore(tmp_path / "runs")
+    app = create_app(store=store, pipeline=replaying_pipeline(), render_pdf=broken_pdf, daily_cap=30, load_key=False)
+    _, lines = submit(TestClient(app))
+    meta = store.read_meta(lines[0]["run_id"])
+    assert lines[-1]["status"] == "passed"
+    assert meta["has_pdf"] is False and meta["has_report"] is True
 
 
 def test_past_runs_and_a_runs_report_can_be_read_back(tmp_path):
@@ -186,7 +199,7 @@ def test_a_refused_brief_ends_with_the_agents_reason(tmp_path):
     _, lines = submit(client)
     result = lines[-1]
     assert result["status"] == "refused"
-    assert "third-derivative term" in result["message"]
+    assert result["message"] == "The equation has a third-derivative term."
     assert store.get(lines[0]["run_id"], "report.pdf") is None
 
 
@@ -194,7 +207,8 @@ def test_a_refuted_run_is_not_verified_and_says_why(tmp_path):
     client, _, _ = make_client(tmp_path, pipeline=replaying_pipeline(code=1))
     result = submit(client)[1][-1]
     assert result["status"] == "failed"
-    assert "Not verified" in result["message"] and "shear does not match" in result["message"]
+    assert result["message"].startswith("The independent check disagreed.")
+    assert "shear does not match" in result["message"]
 
 
 def test_a_busy_ai_service_ends_with_a_plain_sentence(tmp_path):

@@ -72,26 +72,34 @@ def slug(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "report"
 
 
+def _sentence(text: str) -> str:
+    text = text.strip()
+    if not text:
+        return text
+    text = text[0].upper() + text[1:]
+    return text if text[-1] in ".!?" else text + "."
+
+
 def outcome_message(outcome) -> tuple:
-    """(status, plain sentence) for a finished RunOutcome."""
+    """(status, plain sentence) for a finished RunOutcome.
+
+    The sentence never repeats the status ("Verified", "Not verified"): the
+    page shows the status as the heading and this as the line under it.
+    """
     if outcome.code == 0:
-        return "passed", "Verified: every check passed and the independent check agrees."
+        return "passed", "Every check passed and the independent check agrees."
     if outcome.code == 2:
-        reason = refusal_reason(outcome.narrative)
-        if not reason:
-            reason = (outcome.narrative or "").strip()[:400] or (
-                "the AI did not find a beam problem it could solve in this brief."
-            )
-        return "refused", f"Couldn't analyze this brief: {reason}"
+        reason = refusal_reason(outcome.narrative) or (outcome.narrative or "").strip()[:400]
+        return "refused", _sentence(reason or "the AI did not find a beam problem it could solve in this brief")
     gate = outcome.gate or {}
     if gate and not gate.get("passed", True):
         failed = sorted({plain_check_name(c["name"]) for c in gate.get("checks", []) if c.get("status") == "fail"})
-        return "failed", "Not verified: these checks failed: " + (", ".join(failed) or "see the report") + "."
+        return "failed", "These checks failed: " + (", ".join(failed) or "see the report") + "."
     verdict = outcome.verdict or {}
     if verdict.get("model") is None:
-        return "failed", "Not verified: the independent check couldn't run because the AI service was busy."
+        return "failed", "The independent check couldn't run because the AI service was busy."
     reason = (verdict.get("reasoning") or "").strip()
-    return "failed", "Not verified: the independent check disagreed." + (f" Its reason: {reason}" if reason else "")
+    return "failed", "The independent check disagreed." + (f" Its reason: {reason}" if reason else "")
 
 
 def exception_message(exc) -> tuple:
@@ -154,7 +162,7 @@ class Runs:
                     log.exception("run %s failed", run_id)
                     status, message = exception_message(exc)
                 tracer.unsubscribe(on_event)
-                self._save(run_id, out, title)
+                has_pdf = self._save(run_id, out, title)
                 self.store.finish_run(
                     run_id,
                     status,
@@ -162,6 +170,7 @@ class Runs:
                     narrative=narrative[:4000],
                     duration_s=round(time.monotonic() - started, 1),
                     has_report=(out / "report.md").is_file(),
+                    has_pdf=has_pdf,
                 )
         except Exception:
             log.exception("saving run %s failed", run_id)
@@ -172,17 +181,21 @@ class Runs:
             updates.put(None)
             self.lock.release()
 
-    def _save(self, run_id, out, title):
+    def _save(self, run_id, out, title) -> bool:
+        """Store the run's files; True if a PDF of the report was made."""
         for name in ("report.md", "trace.json", "trace.html"):
             path = out / name
             if path.is_file():
                 self.store.put(run_id, name, path.read_bytes())
         report = out / "report.md"
-        if report.is_file():
-            try:
-                self.store.put(run_id, "report.pdf", self.render_pdf(report.read_text(), title))
-            except Exception:
-                log.exception("PDF for run %s failed", run_id)  # the page still shows the report
+        if not report.is_file():
+            return False
+        try:
+            self.store.put(run_id, "report.pdf", self.render_pdf(report.read_text(), title))
+            return True
+        except Exception:
+            log.exception("PDF for run %s failed", run_id)  # the page still shows the report
+            return False
 
 
 def _stream(run_id, title, updates):
