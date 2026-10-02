@@ -10,6 +10,7 @@ live in the terminal and read back afterwards from results/phase1_trace.html.
 import argparse
 import asyncio
 import contextlib
+from dataclasses import dataclass
 import datetime
 import json
 import re
@@ -282,7 +283,8 @@ def _equation_section(equation, result=None):
 
 
 def write_report(
-    brief_text, model_used, model_dict, result, det, verdict, passed, equation=None
+    brief_text, model_used, model_dict, result, det, verdict, passed, equation=None,
+    path=None,
 ):
     banner = "PASS" if passed else "FAIL"
     lines = [
@@ -352,9 +354,10 @@ def write_report(
         f"> {DISCLAIMER}",
         "",
     ]
-    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_PATH.write_text("\n".join(lines))
-    return REPORT_PATH
+    path = REPORT_PATH if path is None else Path(path)  # read at call time, so it can be redirected
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines))
+    return path
 
 
 def write_trace_json(path: Path) -> Path:
@@ -418,8 +421,27 @@ def _summary_lines(model_used, model_dict, result, det, verdict, passed, report,
     return lines
 
 
-def _pipeline(brief_path, brief_text, html_path, json_path, started):
-    """Run all five stages. Returns (exit_code, summary_lines)."""
+@dataclass
+class RunOutcome:
+    """What one run produced, for the CLI's summary and the web server's page.
+
+    code is the CLI exit code: 0 on GATE PASS, 1 on a failed gate, 2 when the
+    orchestrator never called a solver, in which case report_path is None and
+    narrative carries the orchestrator's own explanation of why.
+    """
+
+    code: int
+    passed: bool
+    lines: list
+    report_path: Path | None = None
+    narrative: str = ""
+    model_used: str | None = None
+    verdict: dict | None = None
+    gate: dict | None = None
+
+
+def _pipeline(brief_path, brief_text, html_path, json_path, started, report_path=None):
+    """Run all five stages and return the RunOutcome."""
     _stage("brief")
     tracer.emit(
         "brief",
@@ -430,15 +452,21 @@ def _pipeline(brief_path, brief_text, html_path, json_path, started):
     )
 
     _stage("orchestrator")
-    model_used, _narrative = run_orchestrator(brief_text)
+    model_used, narrative = run_orchestrator(brief_text)
     if not recorder.calls:
         _stage("report")
         _finish(False, None, html_path, json_path, started)
-        return 2, [
-            "GATE FAIL: the orchestrator never called a solver; nothing to verify.",
-            f"  trace (html)       : {html_path or 'skipped'}",
-            f"  trace (json)       : {json_path}",
-        ]
+        return RunOutcome(
+            code=2,
+            passed=False,
+            lines=[
+                "GATE FAIL: the orchestrator never called a solver; nothing to verify.",
+                f"  trace (html)       : {html_path or 'skipped'}",
+                f"  trace (json)       : {json_path}",
+            ],
+            narrative=narrative or "",
+            model_used=model_used,
+        )
     if len(recorder.calls) > 1:
         print(f"note: a solver was called {len(recorder.calls)} times; using the last call")
     call = recorder.last
@@ -455,7 +483,8 @@ def _pipeline(brief_path, brief_text, html_path, json_path, started):
 
     _stage("report")
     report = write_report(
-        brief_text, model_used, model_dict, result, det, verdict, passed, equation
+        brief_text, model_used, model_dict, result, det, verdict, passed, equation,
+        path=report_path,
     )
     _finish(passed, report, html_path, json_path, started)
 
@@ -463,7 +492,38 @@ def _pipeline(brief_path, brief_text, html_path, json_path, started):
         model_used, model_dict, result, det, verdict, passed, report, html_path,
         json_path, equation,
     )
-    return (0 if passed else 1), lines
+    return RunOutcome(
+        code=0 if passed else 1,
+        passed=passed,
+        lines=lines,
+        report_path=report,
+        narrative=narrative or "",
+        model_used=model_used,
+        verdict=verdict,
+        gate=det,
+    )
+
+
+def run_pipeline(brief_text: str, out_dir, brief_name: str = "brief.md") -> RunOutcome:
+    """Run one brief end to end, writing everything into out_dir.
+
+    The library entry point the web server uses: report.md, trace.json and
+    trace.html land in out_dir and nowhere else, so concurrent or successive
+    runs never overwrite each other. The caller loads the API key once, and
+    must not run two pipelines at once in one process: the tracer and the
+    recorder are module-level.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tracer.reset()
+    return _pipeline(
+        Path(brief_name),
+        brief_text,
+        out_dir / "trace.html",
+        out_dir / "trace.json",
+        time.monotonic(),
+        report_path=out_dir / "report.md",
+    )
 
 
 def main(argv) -> int:
@@ -480,9 +540,9 @@ def main(argv) -> int:
     started = time.monotonic()
     view = contextlib.nullcontext() if args.plain else attach_live_view(tracer)
     with view:
-        code, lines = _pipeline(brief_path, brief_text, html_path, json_path, started)
-    print("\n".join(lines))
-    return code
+        outcome = _pipeline(brief_path, brief_text, html_path, json_path, started)
+    print("\n".join(outcome.lines))
+    return outcome.code
 
 
 if __name__ == "__main__":
