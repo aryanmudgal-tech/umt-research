@@ -47,6 +47,13 @@ class Tracer:
         self._subscribers.append(fn)
         return fn
 
+    def unsubscribe(self, fn):
+        """Detach fn; a long-lived web server attaches one listener per run."""
+        try:
+            self._subscribers.remove(fn)
+        except ValueError:
+            pass
+
     @property
     def events(self):
         return list(self._events)
