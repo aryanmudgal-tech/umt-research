@@ -65,3 +65,16 @@ def test_assets_outside_static_are_refused():
     assert pdf.static_file("/static/styles.css") is not None
     assert pdf.static_file("/static/../app.py") is None
     assert pdf.static_file("/static/vendor/../../app.py") is None
+
+
+def test_an_equation_given_as_json_prints_as_the_equation_card():
+    from playwright.sync_api import sync_playwright
+
+    brief = (REPO_ROOT / "evals" / "fixtures" / "brief_bare_json.md").read_text()
+    with sync_playwright() as p:
+        browser, page = pdf.rendered_page(p, brief, "Brief")
+        try:
+            assert page.locator(".eq-card").count() == 1
+            assert '"coeffs"' not in page.locator("#report").inner_text()
+        finally:
+            browser.close()

@@ -176,3 +176,42 @@ def test_a_past_run_can_be_renamed_and_deleted(finished_page):
 def test_no_script_errors(finished_page):
     _page, errors, _ = finished_page
     assert errors == []
+
+
+# ------------------------------------------------- equations in a brief
+
+
+def _preview(finished_page, server, path):
+    """Open a fresh page in the module's browser and preview the brief at path."""
+    browser = finished_page[0].context.browser
+    page = browser.new_page()
+    try:
+        page.goto(server)
+        page.set_input_files("#file", str(path))
+        page.wait_for_selector("#preview h1")
+        return {
+            "text": page.inner_text("#preview"),
+            "cards": page.locator("#preview .eq-card").count(),
+            "rows": page.locator("#preview .eq-params tr").all_inner_texts(),
+            "display_math": page.locator("#preview .katex-display").count(),
+            "errors": page.locator("#preview .katex-error").count(),
+        }
+    finally:
+        page.close()
+
+
+def test_an_equation_pasted_as_json_is_shown_as_an_equation_card(finished_page, server):
+    found = _preview(finished_page, server, REPO_ROOT / "evals" / "fixtures" / "brief_bare_json.md")
+    assert found["cards"] == 1 and found["errors"] == 0
+    assert "Governing equation: Beam on elastic foundation" in found["text"]
+    assert '"coeffs"' not in found["text"] and "{" not in found["text"]
+    rows = [" ".join(r.split()) for r in found["rows"]]
+    assert any("Elastic modulus 30 GPa" in r for r in rows)
+    assert any("Modulus of subgrade reaction 1 × 10⁷ N/m²" in r for r in rows)
+    assert any("Distributed load 30 kN/m, downward" in r for r in rows)
+
+
+def test_an_equation_written_as_math_is_typeset(finished_page, server):
+    found = _preview(finished_page, server, SAMPLE)
+    assert found["display_math"] >= 1 and found["errors"] == 0
+    assert "$$" not in found["text"] and "\\frac" not in found["text"]
