@@ -63,14 +63,26 @@ ensure_sa "${SERVICE}-build" "Builds the $SERVICE container"
 runtime_sa="${SERVICE}-run@${PROJECT}.iam.gserviceaccount.com"
 build_sa="${SERVICE}-build@${PROJECT}.iam.gserviceaccount.com"
 
+# A new service account takes up to a minute to become visible to IAM, and a
+# grant made before then fails with "does not exist". Retry for about a minute.
+retry() {
+  local tries=0
+  until "$@" >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    if [[ $tries -ge 12 ]]; then "$@"; return; fi
+    echo "  waiting for the new service accounts to propagate..."
+    sleep 5
+  done
+}
+
 # the site may read the key and read and write runs, nothing else
-gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
-  --member "serviceAccount:$runtime_sa" --role roles/storage.objectAdmin "${G[@]}" >/dev/null
-gcloud secrets add-iam-policy-binding "$SECRET" \
-  --member "serviceAccount:$runtime_sa" --role roles/secretmanager.secretAccessor "${G[@]}" >/dev/null
+retry gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
+  --member "serviceAccount:$runtime_sa" --role roles/storage.objectAdmin "${G[@]}"
+retry gcloud secrets add-iam-policy-binding "$SECRET" \
+  --member "serviceAccount:$runtime_sa" --role roles/secretmanager.secretAccessor "${G[@]}"
 # the builder may run builds: read the uploaded source, push the image, write logs
-gcloud projects add-iam-policy-binding "$PROJECT" --condition None \
-  --member "serviceAccount:$build_sa" --role roles/cloudbuild.builds.builder "${G[@]}" >/dev/null
+retry gcloud projects add-iam-policy-binding "$PROJECT" --condition None \
+  --member "serviceAccount:$build_sa" --role roles/cloudbuild.builds.builder "${G[@]}"
 
 say "Building remotely and deploying (a few minutes the first time)"
 # No login by decision, so the service is public; one instance, so one run at
