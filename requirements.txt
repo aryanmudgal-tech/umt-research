@@ -12,5 +12,16 @@ PyNiteFEA
 ezdxf
 concreteproperties
 
+# Web UI (web/): server, run storage, PDF printing
+fastapi
+uvicorn
+python-multipart
+google-cloud-storage
+# google-api-core 2.39+ needs opentelemetry-api >= 1.44, and google-adk 2.8
+# pins opentelemetry-api <= 1.42.1, so storage's newest core cannot be used yet
+google-api-core==2.30.0
+playwright
+
 # Dev
 pytest
+httpx

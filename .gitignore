@@ -16,3 +16,6 @@ results/
 
 # OS/editor
 .DS_Store
+
+# Web UI runs stored locally during development
+web_runs/
