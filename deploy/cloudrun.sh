@@ -27,8 +27,9 @@ gcloud auth list --filter=status:ACTIVE --format='value(account)'
 echo "project: $PROJECT, region: $REGION, service: $SERVICE"
 
 say "Enabling the APIs Cloud Run needs"
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com secretmanager.googleapis.com storage.googleapis.com "${G[@]}"
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
+  secretmanager.googleapis.com storage.googleapis.com iam.googleapis.com \
+  cloudresourcemanager.googleapis.com "${G[@]}"
 
 say "Bucket for runs: gs://$BUCKET (a US region keeps it in the free tier)"
 if ! gcloud storage buckets describe "gs://$BUCKET" "${G[@]}" >/dev/null 2>&1; then
@@ -49,18 +50,34 @@ if [[ "${UPDATE_KEY:-0}" == "1" ]]; then
   echo "added a new version of $SECRET"
 fi
 
-say "Letting the service read the key and write runs"
-number="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
-runtime_sa="${number}-compute@developer.gserviceaccount.com"
+say "Service accounts: one the site runs as, one that builds it"
+# Dedicated accounts rather than the default compute one, which a project
+# without Compute Engine does not have, and which can do far more than this.
+ensure_sa() {
+  if ! gcloud iam service-accounts describe "$1@${PROJECT}.iam.gserviceaccount.com" "${G[@]}" >/dev/null 2>&1; then
+    gcloud iam service-accounts create "$1" --display-name "$2" "${G[@]}"
+  fi
+}
+ensure_sa "${SERVICE}-run" "Runs the $SERVICE web UI"
+ensure_sa "${SERVICE}-build" "Builds the $SERVICE container"
+runtime_sa="${SERVICE}-run@${PROJECT}.iam.gserviceaccount.com"
+build_sa="${SERVICE}-build@${PROJECT}.iam.gserviceaccount.com"
+
+# the site may read the key and read and write runs, nothing else
 gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
   --member "serviceAccount:$runtime_sa" --role roles/storage.objectAdmin "${G[@]}" >/dev/null
 gcloud secrets add-iam-policy-binding "$SECRET" \
   --member "serviceAccount:$runtime_sa" --role roles/secretmanager.secretAccessor "${G[@]}" >/dev/null
+# the builder may run builds: read the uploaded source, push the image, write logs
+gcloud projects add-iam-policy-binding "$PROJECT" --condition None \
+  --member "serviceAccount:$build_sa" --role roles/cloudbuild.builds.builder "${G[@]}" >/dev/null
 
 say "Building remotely and deploying (a few minutes the first time)"
 # No login by decision, so the service is public; one instance, so one run at
 # a time; 15-minute requests, because a run lives inside the open page.
 gcloud run deploy "$SERVICE" --source . --region "$REGION" \
+  --service-account "$runtime_sa" \
+  --build-service-account "projects/${PROJECT}/serviceAccounts/${build_sa}" \
   --allow-unauthenticated --max-instances 1 --min-instances 0 --concurrency 20 \
   --memory 2Gi --cpu 1 --timeout 900 \
   --set-secrets "GEMINI_API_KEY=${SECRET}:latest" \
@@ -68,6 +85,7 @@ gcloud run deploy "$SERVICE" --source . --region "$REGION" \
 
 if [[ -n "${BILLING_ACCOUNT:-}" ]]; then
   say "Budget alert: email when spend passes \$1"
+  gcloud services enable billingbudgets.googleapis.com "${G[@]}"
   gcloud billing budgets create --billing-account "$BILLING_ACCOUNT" \
     --display-name "$SERVICE budget" --budget-amount 1USD \
     --filter-projects "projects/$PROJECT" \
