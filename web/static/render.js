@@ -26,7 +26,7 @@
         const details = document.createElement("details");
         details.className = "data";
         const summary = document.createElement("summary");
-        summary.textContent = "Show the data";
+        summary.textContent = "Show raw data";
         pre.parentNode.insertBefore(details, pre);
         details.appendChild(summary);
         details.appendChild(pre);

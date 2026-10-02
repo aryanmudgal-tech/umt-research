@@ -90,8 +90,9 @@
         body += '<circle class="node-dot tb a-pop" style="--d:' + (0.05 + (1.6 * k) / n).toFixed(2) + 's;--dur:3s" cx="' + x.toFixed(1) + '" cy="' + Y + '" r="4.5"/>';
       }
       body += supports(facts, Y);
-      body += '<text class="svg-label a-fade" style="--dur:3s" x="320" y="150" text-anchor="middle">Beam split into ' +
-        (scene.elements || n) + " short pieces</text>";
+      const elements = scene.elements || n;
+      body += '<text class="svg-label a-fade" style="--dur:3s" x="320" y="150" text-anchor="middle">' +
+        elements + " elements, " + (elements + 1) + " nodes</text>";
       return svg(body, "The beam being split into short pieces");
     },
 
@@ -121,16 +122,17 @@
         body += '<path class="beam" d="' + curve(0) + '">' + sagAnimation(0) + "</path>";
       }
       body += supports(facts, Y);
-      let label = "The load pushes down and the beam bends";
-      if (scene.soil) label = "The load pushes down and the soil pushes back";
-      if (scene.axial) label = "The load bends the beam and the end thrust adds to it";
-      if (scene.sag_mm) label = "Midspan sag " + Number(scene.sag_mm).toPrecision(3) + " mm";
+      let label = "Distributed load q";
+      if (scene.soil) label = "Distributed load q and Winkler foundation reaction";
+      if (scene.axial) label = "Distributed load q with axial force P (P–Δ)";
+      if (scene.tapered) label = "Distributed load q on a member with varying EI";
+      if (scene.sag_mm) label = "Midspan deflection " + Number(scene.sag_mm).toPrecision(3) + " mm";
       body += '<text class="svg-label" x="320" y="160" text-anchor="middle">' + esc(label) + "</text>";
       return svg(body, "The beam deflecting under its load");
     },
 
     checking: function () {
-      const checks = ["Forces balance", "Supports stay put", "The answer satisfies the equations", "The method gets a known answer right"];
+      const checks = ["Global vertical equilibrium", "Boundary conditions satisfied", "Residual of K·u = F", "Convergence study"];
       let body = '<g transform="translate(150,22)">';
       checks.forEach(function (text, k) {
         const y = 32 * k;
@@ -145,9 +147,9 @@
       const d = "M70 42 C 150 120, 490 120, 570 42";
       const body = '<path class="line-faint" style="stroke-width:7" d="' + d + '"/>' +
         '<path class="svg-ok a-draw" pathLength="100" d="' + d + '"/>' +
-        '<line class="line-faint" style="stroke-width:7" x1="408" y1="18" x2="432" y2="18"/><text class="svg-label" x="440" y="23">Our solver</text>' +
-        '<line class="svg-ok" x1="408" y1="38" x2="432" y2="38"/><text class="svg-label" x="440" y="43">Independent method</text>' +
-        '<text class="svg-label-strong a-fade" style="--dur:3s" x="320" y="152" text-anchor="middle">Comparing the two answers</text>';
+        '<line class="line-faint" style="stroke-width:7" x1="408" y1="18" x2="432" y2="18"/><text class="svg-label" x="440" y="23">FE solution</text>' +
+        '<line class="svg-ok" x1="408" y1="38" x2="432" y2="38"/><text class="svg-label" x="440" y="43">Collocation solution</text>' +
+        '<text class="svg-label-strong a-fade" style="--dur:3s" x="320" y="152" text-anchor="middle">Comparing the two solutions</text>';
       return svg(body, "Two independent answers being compared");
     },
 
