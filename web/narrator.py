@@ -11,6 +11,8 @@ No I/O and no network: the same events replayed give the same updates, which
 is what the tests do with a recorded run.
 """
 
+import math
+
 from agent.key_results import key_results
 
 STAGES = ("reading", "modeling", "solving", "checking", "independent", "report")
@@ -18,53 +20,97 @@ SOLVERS = {"solve_beam_3d", "solve_with_equation"}
 
 EXPLAIN = {
     "reading": (
-        "The AI is reading your brief and picking out the facts the analysis "
-        "needs: the span, how the beam is held up, the load on it, and which "
-        "equation governs it. It only reads here; it doesn't calculate anything."
+        "The AI model reads the brief and extracts the inputs: span, boundary "
+        "conditions, loading and the governing equation. It performs no "
+        "calculation; every number comes from the finite element solver."
     ),
     "checking": (
-        "Plain computer checks test the answer before anyone sees it: do the "
-        "forces balance, do the supports stay put, does the answer satisfy the "
-        "equations exactly, and does the method get a known answer right? Any "
-        "failure means the result can't be marked verified."
+        "Deterministic verification before the result is released: global "
+        "equilibrium, the residual of the stiffness equations, the boundary "
+        "conditions, and a convergence study against a manufactured exact "
+        "solution. Any failure means the result cannot be marked verified."
     ),
     "independent": (
-        "A second AI, which never saw the first one's work, solves the same "
-        "problem by a different method and compares the numbers. If they "
-        "disagree, the result is marked not verified."
+        "A second AI model, with no access to the first model's work, re-solves "
+        "the problem by a different numerical method and compares the results. "
+        "Any disagreement marks the result not verified."
     ),
     "report": (
-        "Everything goes into one report: the answers to your brief, the "
-        "equation that was solved, how it was derived, the full results, and "
-        "every check with its outcome."
+        "Compiling the report: the key results, the governing equation and its "
+        "Galerkin derivation, the full results, and every check with its outcome."
     ),
 }
 
-_PLAIN_CHECKS = {
-    "equilibrium_forces": "Forces balance",
-    "equation_equilibrium": "Forces balance",
-    "equation_solution_residual": "The answer satisfies the equations",
-    "equation_samples_consistent": "Reported numbers match the solution",
-    "stiffness_symmetric": "Stiffness matrix is symmetric",
-    "equation_stiffness_symmetry": "Stiffness matrix is symmetric",
-    "rigid_body_nullspace": "The beam can't move without bending",
-    "supports_respected": "Supports stay put",
-    "equation_support_conditions": "Supports stay put",
-    "deflection_negative_under_downward_load": "The beam bends the way it's pushed",
-    "equation_deflection_sign": "The beam bends the way it's pushed",
-    "equation_mms": "The method gets a known answer right",
-    "pynite_agreement": "A second FEM program agrees",
+# Every verification check, as a civil engineer would name it: (name, what it tests).
+CHECKS = {
+    "equilibrium": (
+        "Global vertical equilibrium",
+        "Support reactions plus any foundation reaction must equal the applied load.",
+    ),
+    "residual": (
+        "Residual of the stiffness equations",
+        "K·u − F must vanish at the free degrees of freedom, and the reported reactions "
+        "must equal K·u − F at the restrained ones.",
+    ),
+    "consistent": (
+        "Reported results consistent with the solution",
+        "Deflections, rotations, moments and shears in the report are recomputed from the "
+        "nodal solution and compared.",
+    ),
+    "symmetric": ("Stiffness matrix symmetry", "K must equal Kᵀ, as it does for this self-adjoint problem."),
+    "rigid": (
+        "No mechanism",
+        "With the boundary conditions applied the structure must be stable: no rigid-body motion.",
+    ),
+    "supports": ("Boundary conditions satisfied", "Restrained degrees of freedom show zero displacement."),
+    "sign": ("Deflection sense", "A downward load must produce a downward deflection."),
+    "mms": (
+        "Convergence study (manufactured solution)",
+        "An exact solution is manufactured for this equation and the load producing it derived; "
+        "the finite element solution must converge to it at the theoretical rate, fourth order "
+        "for Hermite cubic elements.",
+    ),
+    "textbook": (
+        "Closed-form solution",
+        "For a simply supported, uniformly loaded Euler–Bernoulli beam the results must match "
+        "δ = 5qL⁴/384EI, M = qL²/8 and V = qL/2.",
+    ),
+    "pynite": (
+        "Independent FEM program (PyNite)",
+        "PyNite, an independent frame analysis program, solves the same model and must agree.",
+    ),
 }
+_CHECK_KEY = {
+    "equilibrium_forces": "equilibrium",
+    "equation_equilibrium": "equilibrium",
+    "equation_solution_residual": "residual",
+    "equation_samples_consistent": "consistent",
+    "stiffness_symmetric": "symmetric",
+    "equation_stiffness_symmetry": "symmetric",
+    "rigid_body_nullspace": "rigid",
+    "supports_respected": "supports",
+    "equation_support_conditions": "supports",
+    "deflection_negative_under_downward_load": "sign",
+    "equation_deflection_sign": "sign",
+    "equation_mms": "mms",
+    "pynite_agreement": "pynite",
+}
+
+
+def check_key(name: str):
+    """The CHECKS key for a gate check's name, or None for one not listed."""
+    name = name.removeprefix("invariant_")
+    if name.startswith("closed_form"):
+        return "textbook"
+    return _CHECK_KEY.get(name)
 
 
 def plain_check_name(name: str) -> str:
-    """A gate check's name as a professor would say it."""
-    name = name.removeprefix("invariant_")
-    if name.startswith("closed_form"):
-        return "Matches the textbook formula"
-    if name in _PLAIN_CHECKS:
-        return _PLAIN_CHECKS[name]
-    words = name.replace("_", " ").strip()
+    """A gate check's name as a civil engineer would say it."""
+    key = check_key(name)
+    if key:
+        return CHECKS[key][0]
+    words = name.removeprefix("invariant_").replace("_", " ").strip()
     return words[:1].upper() + words[1:]
 
 
@@ -79,10 +125,15 @@ def _force_per_length(w):
     return f"{_num(abs(w) / 1000)} kN/m {'downward' if w < 0 else 'upward'}"
 
 
-def _stiffness(k):
-    if abs(k) >= 1e6:
-        return f"{_num(k / 1e6)} million N/m²"
-    return f"{_num(k)} N/m²"
+_SUPERSCRIPT = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def sci(value: float) -> str:
+    """1.5e8 -> '1.5 × 10⁸'; ordinary sizes stay ordinary."""
+    if value == 0 or 1e-3 <= abs(value) < 1e5:
+        return f"{value:.4g}"
+    exponent = math.floor(math.log10(abs(value)))
+    return f"{value / 10**exponent:.3g} × 10{str(exponent).translate(_SUPERSCRIPT)}"
 
 
 def _support_kind(flags):
@@ -166,8 +217,8 @@ class Narrator:
                         "reading",
                         "failed",
                         "Couldn't analyze this brief",
-                        "The AI read the brief but did not produce a beam model it "
-                        "could solve. Its reason is shown below.",
+                        "The AI model read the brief but did not produce a finite "
+                        "element model it could solve. Its reason is shown below.",
                     )
                 )
                 return out
@@ -177,13 +228,13 @@ class Narrator:
 
     def _on_model_fallback(self, stage, data):
         target = "independent" if data.get("role") == "verifier" else (self._active() or "reading")
-        return [self._update(target, note="The AI service is busy, so it is switching to a backup model.")]
+        return [self._update(target, note="The AI service is busy; switching to a backup model.")]
 
     def _on_tool_call(self, stage, data):
         name = data.get("name")
         if stage == "verifier":
             if self.status["independent"] == "active":
-                return [self._update("independent", note="Solving the beam again by a different method…")]
+                return [self._update("independent", note="Re-solving by an independent numerical method…")]
             return []
         if name not in SOLVERS:
             return []
@@ -193,23 +244,24 @@ class Narrator:
         self._describe()
         n = self.scene["elements"]
         supports = " and ".join(sorted({_support_kind(f) for f in (self.model.get("supports") or {}).values()}))
+        dofs = (2 if self.equation is not None else 6) * (n + 1)
+        length = f" of {_num(self.scene['span'] / n, 3)} m" if n else ""
         return [
             self._update("reading", "done", self._title()),
             self._update(
                 "modeling",
                 "done",
-                f"{n} pieces, {supports or 'no supports'}",
-                f"The beam is split into {n} short pieces joined end to end. Each "
-                "piece is simple to describe, and together they behave like the "
-                "whole beam: this is the finite element method.",
+                f"{n} elements, {supports or 'no supports'}",
+                f"Discretized into {n} Hermite cubic beam elements{length}: {n + 1} "
+                f"nodes, {dofs} degrees of freedom.",
             ),
             self._update(
                 "solving",
                 "active",
                 "Solving",
-                f"The computer, not the AI, now solves {self._equation_phrase()} for "
-                f"all {n} pieces at once, working out how far every point of the "
-                "beam moves.",
+                f"Assembling and solving the global stiffness system K·u = F for "
+                f"{self._equation_phrase()}. This is computed by the solver; the AI "
+                "model plays no part in it.",
             ),
         ]
 
@@ -223,7 +275,7 @@ class Narrator:
             return []
         if isinstance(result, dict) and "error" in result:
             reason = str(result["error"]).split(":", 1)[-1].strip()
-            return [self._update("solving", note=f"The solver couldn't take this equation ({reason}). The AI is deciding what to do.")]
+            return [self._update("solving", note=f"The solver rejected this equation ({reason}). The AI model is deciding how to proceed.")]
         self.solved = True
         try:
             k = key_results(self.model, result, self.equation)
@@ -233,13 +285,13 @@ class Narrator:
         self.scene["sag_mm"] = abs(sag) * 1000
         where = k["max_moment"]["x"]
         explanation = (
-            f"The beam sinks {_num(abs(sag) * 1000)} mm at midspan. The largest "
-            f"bending moment is {_num(k['max_moment']['value'] / 1000)} kN·m"
-            + (f", {_num(where, 3)} m from the left end." if where is not None else ".")
+            f"Midspan deflection {_num(abs(sag) * 1000)} mm. Maximum bending moment "
+            f"{_num(k['max_moment']['value'] / 1000)} kN·m"
+            + (f" at x = {_num(where, 3)} m." if where is not None else ".")
         )
         if self.scene["soil"]:
-            explanation += " The soil pushes back along the whole beam and carries most of the load."
-        return [self._update("solving", "done", f"Midspan sag {_num(abs(sag) * 1000, 3)} mm", explanation)]
+            explanation += " The foundation reaction carries most of the load."
+        return [self._update("solving", "done", f"Midspan deflection {_num(abs(sag) * 1000, 3)} mm", explanation)]
 
     def _on_gate_check(self, stage, data):
         self.checks_seen += 1
@@ -252,8 +304,9 @@ class Narrator:
         applicable = data.get("n_total", 0) - data.get("n_skipped", 0)
         skipped = data.get("n_skipped", 0)
         skipped_text = (
-            f" {skipped} {'check' if skipped == 1 else 'checks'} didn't apply to this "
-            "equation and were skipped, which is never counted as a pass."
+            f" {skipped} {'check does' if skipped == 1 else 'checks do'} not apply to this "
+            f"equation and {'was' if skipped == 1 else 'were'} skipped; a skipped check is never "
+            "counted as a pass."
             if skipped
             else ""
         )
@@ -263,7 +316,7 @@ class Narrator:
                     "checking",
                     "done",
                     f"{data.get('n_passed', 0)} of {applicable} checks passed",
-                    "Every check that applies to this beam passed." + skipped_text,
+                    "All applicable checks passed." + skipped_text,
                 )
             ]
         failed = ", ".join(self.failed_checks) or "see the report"
@@ -272,7 +325,7 @@ class Narrator:
                 "checking",
                 "failed",
                 f"{data.get('n_failed', 0)} of {applicable} checks failed",
-                f"Failed: {failed}. The result can't be marked verified." + skipped_text,
+                f"Failed: {failed}. The result cannot be marked verified." + skipped_text,
             )
         ]
 
@@ -285,7 +338,7 @@ class Narrator:
                 "independent",
                 "done",
                 "The independent check agrees",
-                "A second AI solved the same problem by a different method and its numbers match ours.",
+                "The second model re-solved the problem by a different numerical method and its results match.",
             )
         ]
 
@@ -294,7 +347,7 @@ class Narrator:
         self.passed = bool(data.get("passed"))
         if not self.solved:
             return []
-        return [self._update("report", "done", "Your report is ready", "The report opens below.")]
+        return [self._update("report", "done", "The report is ready", "The report opens below.")]
 
     # ------------------------------------------------------- descriptions
 
@@ -322,14 +375,14 @@ class Narrator:
             k = _numeric(coeffs.get("v0", "0"), params)
             if k:
                 self.scene["soil"] = True
-                facts.append(f"Soil stiffness: {_stiffness(k)}")
+                facts.append(f"Subgrade modulus: {sci(k)} N/m²")
             P = _numeric(coeffs.get("v2", "0"), params)
             if P:
                 self.scene["axial"] = True
                 facts.append(f"Axial force: {_num(abs(P) / 1e6)} MN {'compression' if P > 0 else 'tension'}")
             if "x" in str(coeffs.get("v4", "")):
                 self.scene["tapered"] = True
-                facts.append("Stiffness varies along the span")
+                facts.append("EI varies along the span")
         for point in model.get("point_loads") or []:
             if point.get("dof") == "FY" and point.get("value"):
                 facts.append(f"Point load: {_num(abs(point['value']) / 1000)} kN at {point['node']}")
@@ -341,5 +394,5 @@ class Narrator:
 
     def _equation_phrase(self):
         if self.equation is None:
-            return "the standard beam equation"
-        return f"your equation ({(self.equation.get('label') or 'custom').lower()})"
+            return "the Euler–Bernoulli beam equation"
+        return f"the governing equation from the brief ({(self.equation.get('label') or 'custom').lower()})"

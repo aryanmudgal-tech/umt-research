@@ -1,5 +1,8 @@
 """Offline tests for web/narrator.py: raw run events in, the professor's view out.
 
+The wording is a civil engineer's (elements, degrees of freedom, subgrade
+modulus), never software's (tool calls, JSON, function names).
+
 The page shows six stages in plain English. The narrator turns the tracer's
 events into stage updates, so these tests replay a real recorded run and a
 handful of scripted ones (busy model, refused equation, failed check,
@@ -60,13 +63,13 @@ def test_reading_lists_the_facts_it_found(soil_run):
     assert "Span: 25 m" in reading["facts"]
     assert "Supports: pin and roller" in reading["facts"]
     assert "Load: 30 kN/m downward" in reading["facts"]
-    assert "Soil stiffness: 10 million N/m²" in reading["facts"]
+    assert "Subgrade modulus: 1 × 10⁷ N/m²" in reading["facts"]
 
 
 def test_the_model_and_the_scene_follow_the_brief(soil_run):
     _, updates = soil_run
     modeling = last(updates, "modeling")
-    assert "20 short pieces" in modeling["explanation"]
+    assert "20 Hermite cubic beam elements of 1.25 m: 21 nodes, 42 degrees of freedom" in modeling["explanation"]
     scene = modeling["scene"]
     assert scene["soil"] is True and scene["axial"] is False and scene["tapered"] is False
     assert scene["elements"] == 20
@@ -154,7 +157,7 @@ def test_a_failed_check_is_named_in_plain_words():
     ])
     checking = last(updates, "checking")
     assert checking["status"] == "failed"
-    assert "Forces balance" in checking["explanation"]
+    assert "Global vertical equilibrium" in checking["explanation"]
 
 
 def test_a_refuting_verifier_gives_its_reason():
@@ -170,9 +173,9 @@ def test_a_refuting_verifier_gives_its_reason():
 @pytest.mark.parametrize(
     "name, plain",
     [
-        ("invariant_equilibrium_forces", "Forces balance"),
-        ("equation_mms", "The method gets a known answer right"),
-        ("closed_form_max_moment", "Matches the textbook formula"),
+        ("invariant_equilibrium_forces", "Global vertical equilibrium"),
+        ("equation_mms", "Convergence study (manufactured solution)"),
+        ("closed_form_max_moment", "Closed-form solution"),
         ("some_new_check", "Some new check"),
     ],
 )
