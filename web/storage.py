@@ -13,6 +13,7 @@ bucket: a run written there survives the instance going to sleep.
 import json
 import re
 import secrets
+import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,11 @@ FILES = {
 # A run still marked running after this long lost its page: Cloud Run gives a
 # request CPU only while it is open, so a closed tab can stop a run mid-way.
 STALE_AFTER_S = 20 * 60
+
+# A deleted run leaves only a small marker for this long, so deleting runs
+# cannot reset the cap on runs per 24 hours. Then the marker goes too.
+TOMBSTONE_S = 24 * 3600
+MAX_TITLE = 120
 
 _RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
 
@@ -81,20 +87,50 @@ class RunStore:
 
     def read_meta(self, run_id: str):
         meta = self._read_raw(run_id)
-        return self._settle(meta) if meta else None
+        if not meta or meta.get("status") == "deleted":
+            return None
+        return self._settle(meta)
+
+    def rename_run(self, run_id: str, title: str) -> dict:
+        title = " ".join(str(title).split())[:MAX_TITLE]
+        if not title:
+            raise ValueError("a run needs a title")
+        meta = self.read_meta(run_id)
+        if meta is None:
+            raise KeyError(run_id)
+        raw = self._read_raw(run_id)
+        raw["title"] = title
+        self._write_meta(run_id, raw)
+        return self.read_meta(run_id)
+
+    def delete_run(self, run_id: str) -> None:
+        """Remove a run's files, leaving a marker that still counts toward the cap."""
+        meta = self._read_raw(run_id)
+        if meta is None or meta.get("status") == "deleted":
+            raise KeyError(run_id)
+        self._delete_all(run_id)
+        self._write_meta(run_id, {
+            "id": run_id,
+            "status": "deleted",
+            "created_ts": meta.get("created_ts", time.time()),
+            "deleted_ts": time.time(),
+        })
 
     def list_runs(self, limit: int = 50) -> list:
         metas = []
-        for run_id in self._run_ids():
-            meta = self._read_raw(run_id)
-            if meta:
-                metas.append(self._settle(meta))
+        for meta in self._all_meta():
+            if meta.get("status") == "deleted":
+                if time.time() - meta.get("created_ts", 0.0) > TOMBSTONE_S:
+                    self._delete_all(meta["id"])  # its day has passed
+                continue
+            metas.append(self._settle(meta))
         metas.sort(key=lambda m: m.get("created_ts", 0.0), reverse=True)
         return metas[:limit]
 
     def runs_since(self, seconds: float) -> int:
+        """Runs started in the last `seconds`, deleted ones included."""
         cutoff = time.time() - seconds
-        return sum(1 for m in self.list_runs(limit=10**6) if m.get("created_ts", 0.0) >= cutoff)
+        return sum(1 for m in self._all_meta() if m.get("created_ts", 0.0) >= cutoff)
 
     # ------------------------------------------------------------- helpers
 
@@ -109,6 +145,13 @@ class RunStore:
     def _read_raw(self, run_id):
         data = self.get(run_id, "meta.json")
         return json.loads(data) if data else None
+
+    def _all_meta(self):
+        for run_id in self._run_ids():
+            meta = self._read_raw(run_id)
+            if meta:
+                meta.setdefault("id", run_id)
+                yield meta
 
 
 class LocalStore(RunStore):
@@ -130,6 +173,9 @@ class LocalStore(RunStore):
         if not self.root.is_dir():
             return []
         return [p.name for p in self.root.iterdir() if valid_run_id(p.name)]
+
+    def _delete_all(self, run_id):
+        shutil.rmtree(self.root / run_id, ignore_errors=True)
 
 
 class GCSStore(RunStore):
@@ -166,3 +212,7 @@ class GCSStore(RunStore):
             if len(parts) == 3 and parts[2] == "meta.json" and valid_run_id(parts[1]):
                 ids.append(parts[1])
         return ids
+
+    def _delete_all(self, run_id):
+        for blob in self.client.list_blobs(self.bucket_name, prefix=f"{self.prefix}/{run_id}/"):
+            blob.delete()

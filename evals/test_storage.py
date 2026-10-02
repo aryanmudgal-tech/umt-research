@@ -112,3 +112,59 @@ def test_runs_in_the_last_day_are_counted(store, monkeypatch):
     store.start_run("new one")
     store.start_run("new two")
     assert store.runs_since(24 * 3600) == 2
+
+
+# ------------------------------------------------------- rename and delete
+
+
+class _DeletingBlob(_Blob):
+    def delete(self):
+        self.objects.pop(self.name, None)
+
+
+def _with_delete(client):
+    client.bucket = lambda name: type("B", (), {"blob": lambda self, n: _DeletingBlob(client.objects, n)})()
+    client.list_blobs = lambda bucket_name, prefix="": [
+        _DeletingBlob(client.objects, n) for n in sorted(client.objects) if n.startswith(prefix)
+    ]
+    return client
+
+
+@pytest.fixture(params=["local", "gcs"])
+def full_store(request, tmp_path):
+    if request.param == "local":
+        return LocalStore(tmp_path / "runs")
+    return GCSStore("bucket", client=_with_delete(FakeClient()))
+
+
+def test_a_run_can_be_renamed(full_store):
+    run = full_store.start_run("25 m beam on soil")
+    full_store.finish_run(run, "passed")
+    full_store.rename_run(run, "  Soil beam, first try  ")
+    assert full_store.read_meta(run)["title"] == "Soil beam, first try"
+    assert full_store.read_meta(run)["status"] == "passed"
+
+
+def test_a_deleted_run_is_gone_but_still_counts_toward_the_cap(full_store):
+    run = full_store.start_run("Beam")
+    full_store.put(run, "report.md", "# Report")
+    full_store.put(run, "report.pdf", b"%PDF")
+    full_store.finish_run(run, "passed")
+
+    full_store.delete_run(run)
+
+    assert full_store.read_meta(run) is None
+    assert full_store.list_runs() == []
+    assert full_store.get(run, "report.md") is None and full_store.get(run, "report.pdf") is None
+    assert full_store.runs_since(24 * 3600) == 1  # deleting must not reset the daily cap
+
+
+def test_a_deleted_runs_marker_is_cleared_after_a_day(full_store, monkeypatch):
+    clock = [1_000_000.0]
+    monkeypatch.setattr(storage.time, "time", lambda: clock[0])
+    run = full_store.start_run("Beam")
+    full_store.delete_run(run)
+    clock[0] += 25 * 3600
+    assert full_store.runs_since(24 * 3600) == 0
+    full_store.list_runs()  # listing sweeps old markers away
+    assert full_store._read_raw(run) is None
