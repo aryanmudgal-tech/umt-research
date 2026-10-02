@@ -4,8 +4,9 @@ Agentic AI for Prof. Basaran's bridge-beam pipeline: Galerkin FEM → ACI 318
 concrete design → cost analysis → DXF drawings, with an adversarial verifier
 and hard verification gates. Full plan and evidence: [PROPOSAL.md](PROPOSAL.md).
 
-Stack: Google ADK + Gemini (free tier, AI Studio key) + deterministic Python
-tools (NumPy, PyNite, ezdxf, concreteproperties).
+Stack: Google ADK + Gemini (paid tier, AI Studio key) + deterministic Python
+tools (NumPy, PyNite, ezdxf, concreteproperties), and a FastAPI web UI for
+the professor (`web/`).
 
 ## Setup
 
@@ -53,6 +54,36 @@ Each run writes three things to `results/` (gitignored):
   double-click, expand any step, read the model dict and the verdict
 - `phase1_trace.json` — the raw event list behind that page
 
+## The professor's website
+
+Prof. Basaran uses the agent through a web page, never the terminal: he
+uploads a brief (`.md`), clicks **Run analysis**, watches six plain-English
+stages with an animation for the one in progress, and reads the report
+formatted as a document, with typeset equations, a PDF download and a
+markdown download. Past runs are listed down the side. There is no login, by
+decision; the safeguards are one run at a time and a cap of `DAILY_CAP` runs
+(default 30) per 24 hours. Design: [the spec](docs/superpowers/specs/2026-10-02-professor-web-ui-design.md).
+
+```bash
+.venv/bin/python -m playwright install chromium            # once: Chromium for PDFs
+.venv/bin/python -m web.demo --port 8765                    # replayed run, no Gemini calls
+.venv/bin/uvicorn web.app:create_app --factory --port 8080  # live, uses the key in .env
+```
+
+Locally, runs are kept in `web_runs/` (gitignored). On Cloud Run they go to a
+Cloud Storage bucket named by `RUNS_BUCKET`. To deploy, sign gcloud in to the
+account that owns the project, then:
+
+```bash
+PROJECT=your-project-id ./deploy/cloudrun.sh
+```
+
+It enables the APIs, creates the bucket, moves the key from `.env` into
+Secret Manager, grants access and deploys; re-running it is safe. Cloud Run
+gives the service CPU only while a request is open, and a run lives inside
+the professor's open page, so a run whose tab is closed is listed as
+interrupted rather than finished.
+
 ## Changing the equation
 
 The governing equation is an input, not code. Nothing in `tools/fem/equation.py`
@@ -74,10 +105,12 @@ Simply supported, span 25 m, q = 30 kN/m downward, resting on ground with a
 modulus of subgrade reaction k = 1.0e7 N/m per metre of span.
 ```
 
-**2. Name a file from `equations/`.** Four ready-made equations live there —
-`euler_bernoulli.json`, `elastic_foundation.json`, `beam_column.json`,
-`tapered_beam.json` — each with a comment saying what it models. Copy one,
-change the numbers in `params`, and refer to it in the brief.
+**2. Paste a file from `equations/` into the brief.** Four ready-made
+equations live there — `euler_bernoulli.json`, `elastic_foundation.json`,
+`beam_column.json`, `tapered_beam.json` — each with a comment saying what it
+models. Copy one's contents into the brief, in a fenced `json` block, and
+change the numbers in `params`. Naming the file is not enough: the agent reads
+the brief, and cannot open files. `web/sample_brief.md` shows the layout.
 
 **3. Write your own JSON.** The full contract, with worked examples, is in
 [equations/README.md](equations/README.md). The short version:
@@ -140,6 +173,8 @@ reports **SKIPPED**, and a skipped check is never counted as a pass.
 ## Layout
 
 - `agent/` — orchestrator, verifier, gates, trace/live view (Phase 1+)
+- `web/` — the professor's website: server, narrator, storage, PDF, page
+- `deploy/` — the Cloud Run deploy script (the `Dockerfile` is at the root)
 - `tools/` — deterministic engineering tools: `fem/`, `rc_design/`, `cost/`, `drawings/`
 - `spike/` — Phase-0 harness spike
 - `scripts/` — utilities (model probe)
