@@ -31,6 +31,22 @@ gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregi
   secretmanager.googleapis.com storage.googleapis.com iam.googleapis.com \
   cloudresourcemanager.googleapis.com "${G[@]}"
 
+if [[ -n "${BILLING_ACCOUNT:-}" ]]; then
+  say "Budget alert first, before anything that could cost money: email past \$1"
+  gcloud services enable billingbudgets.googleapis.com "${G[@]}"
+  existing="$(gcloud billing budgets list --billing-account "$BILLING_ACCOUNT" \
+    --filter "displayName='$SERVICE budget'" --format 'value(name)' 2>/dev/null)"
+  if [[ -z "$existing" ]]; then
+    gcloud billing budgets create --billing-account "$BILLING_ACCOUNT" \
+      --display-name "$SERVICE budget" --budget-amount 1USD \
+      --filter-projects "projects/$PROJECT" \
+      --threshold-rule percent=0.5 --threshold-rule percent=1.0 --quiet >/dev/null
+    echo "created: email at \$0.50 and \$1.00 of spend on $PROJECT"
+  else
+    echo "already there: $existing"
+  fi
+fi
+
 say "Bucket for runs: gs://$BUCKET (a US region keeps it in the free tier)"
 if ! gcloud storage buckets describe "gs://$BUCKET" "${G[@]}" >/dev/null 2>&1; then
   gcloud storage buckets create "gs://$BUCKET" --location "$REGION" \
@@ -80,9 +96,10 @@ retry gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
   --member "serviceAccount:$runtime_sa" --role roles/storage.objectAdmin "${G[@]}"
 retry gcloud secrets add-iam-policy-binding "$SECRET" \
   --member "serviceAccount:$runtime_sa" --role roles/secretmanager.secretAccessor "${G[@]}"
-# the builder may run builds: read the uploaded source, push the image, write logs
+# the builder gets the one role Google documents for building a Cloud Run
+# service from source: Cloud Run Builder (read the upload, push, log)
 retry gcloud projects add-iam-policy-binding "$PROJECT" --condition None \
-  --member "serviceAccount:$build_sa" --role roles/cloudbuild.builds.builder "${G[@]}"
+  --member "serviceAccount:$build_sa" --role roles/run.builder "${G[@]}"
 
 say "Building remotely and deploying (a few minutes the first time)"
 # No login by decision, so the service is public; one instance, so one run at
@@ -95,14 +112,9 @@ gcloud run deploy "$SERVICE" --source . --region "$REGION" \
   --set-secrets "GEMINI_API_KEY=${SECRET}:latest" \
   --set-env-vars "RUNS_BUCKET=${BUCKET},DAILY_CAP=${DAILY_CAP}" "${G[@]}"
 
-if [[ -n "${BILLING_ACCOUNT:-}" ]]; then
-  say "Budget alert: email when spend passes \$1"
-  gcloud services enable billingbudgets.googleapis.com "${G[@]}"
-  gcloud billing budgets create --billing-account "$BILLING_ACCOUNT" \
-    --display-name "$SERVICE budget" --budget-amount 1USD \
-    --filter-projects "projects/$PROJECT" \
-    --threshold-rule percent=0.5 --threshold-rule percent=1.0 --quiet >/dev/null
-fi
+say "Keeping only the two newest container images (each is about 1 GB; 0.5 GB is free)"
+gcloud artifacts repositories set-cleanup-policies cloud-run-source-deploy --location "$REGION" \
+  --policy deploy/image-cleanup.json --no-dry-run "${G[@]}" >/dev/null
 
 say "Done"
 gcloud run services describe "$SERVICE" --region "$REGION" --format 'value(status.url)' "${G[@]}"
