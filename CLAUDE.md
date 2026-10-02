@@ -36,13 +36,22 @@ branch `main`). This directory is the repository root.
 ## Running things
 
 ```bash
-.venv/bin/python -m pytest evals/ -q     # full offline suite, no API calls
-.venv/bin/python agent/run_phase1.py     # live run: brief -> verified report
+.venv/bin/python -m pytest evals/ -q                        # full offline suite, no API calls
+.venv/bin/python agent/run_phase1.py                        # live run: brief -> verified report
+.venv/bin/python -m web.demo --port 8765                    # the website with a replayed run
+.venv/bin/uvicorn web.app:create_app --factory --port 8080  # the website, live
 ```
 
 The venv is Python 3.12 (`/usr/local/bin/python3.12`); a 3.14 venv fails to build.
-Gemini runs on the free tier, which is Flash-only and returns 503 under load, so
-the model roster falls back. Tests must never call an LLM or the network.
+The browser and PDF tests need Playwright's Chromium (`python -m playwright
+install chromium`) and skip without it. Since 2026-10-02 the Gemini key is on
+the paid tier; Flash models still return 503 under load, so calls retry with
+backoff, each model turn has a time budget, and the roster falls back. Tests
+must never call an LLM or the network.
+
+The professor uses the agent only through the website (`web/`), which has no
+login by his and Aryan's decision; don't add one. It deploys to Cloud Run with
+`deploy/cloudrun.sh`.
 
 ## How the system is built
 
