@@ -233,3 +233,57 @@ def test_the_run_does_not_leave_a_listener_on_the_tracer(tmp_path):
     client, _, _ = make_client(tmp_path)
     submit(client)
     assert len(tracer._subscribers) == before
+
+
+# ----------------------------------------------------- rename and delete
+
+
+def test_a_run_can_be_renamed(tmp_path):
+    client, store, _ = make_client(tmp_path)
+    run_id = submit(client)[1][0]["run_id"]
+
+    r = client.patch(f"/api/runs/{run_id}", json={"title": "Soil beam, k = 1e7"})
+    assert r.status_code == 200 and r.json()["title"] == "Soil beam, k = 1e7"
+    assert client.get("/api/runs").json()[0]["title"] == "Soil beam, k = 1e7"
+    pdf = client.get(f"/api/runs/{run_id}/report.pdf")
+    assert 'filename="soil-beam-k-1e7.pdf"' in pdf.headers["content-disposition"]
+
+
+@pytest.mark.parametrize("body, code", [({"title": "   "}, 400), ({}, 422), ({"title": 5}, 422)])
+def test_a_rename_needs_a_title(tmp_path, body, code):
+    client, _, _ = make_client(tmp_path)
+    run_id = submit(client)[1][0]["run_id"]
+    assert client.patch(f"/api/runs/{run_id}", json=body).status_code == code
+
+
+def test_a_run_can_be_deleted(tmp_path):
+    client, store, _ = make_client(tmp_path)
+    run_id = submit(client)[1][0]["run_id"]
+
+    assert client.delete(f"/api/runs/{run_id}").status_code == 204
+    assert client.get("/api/runs").json() == []
+    assert client.get(f"/api/runs/{run_id}").status_code == 404
+    assert client.get(f"/api/runs/{run_id}/report.pdf").status_code == 404
+    assert client.delete(f"/api/runs/{run_id}").status_code == 404
+
+
+def test_deleting_runs_does_not_reset_the_daily_cap(tmp_path):
+    client, _, _ = make_client(tmp_path, cap=1)
+    run_id = submit(client)[1][0]["run_id"]
+    client.delete(f"/api/runs/{run_id}")
+    assert submit(client)[0] == 429
+
+
+def test_a_running_run_cannot_be_deleted(tmp_path):
+    client, store, _ = make_client(tmp_path)
+    run_id = store.start_run("still going")
+    r = client.delete(f"/api/runs/{run_id}")
+    assert r.status_code == 409 and "still running" in r.json()["detail"]
+    assert store.read_meta(run_id) is not None
+
+
+@pytest.mark.parametrize("method", ["patch", "delete"])
+def test_unknown_runs_cannot_be_changed(tmp_path, method):
+    client, _, _ = make_client(tmp_path)
+    kwargs = {"json": {"title": "x"}} if method == "patch" else {}
+    assert getattr(client, method)("/api/runs/20261002-000000-abcdef", **kwargs).status_code == 404

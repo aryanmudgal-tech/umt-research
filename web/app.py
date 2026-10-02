@@ -29,7 +29,7 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -303,6 +303,22 @@ def create_app(store=None, pipeline=None, render_pdf=None, daily_cap=None, load_
             data, media_type=media_type,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    @app.patch("/api/runs/{run_id}")
+    def rename_run(run_id: str, title: str = Body(..., embed=True)):
+        meta_or_404(run_id)
+        try:
+            return runs.store.rename_run(run_id, title)
+        except ValueError:
+            raise HTTPException(400, "A run needs a name.")
+
+    @app.delete("/api/runs/{run_id}", status_code=204)
+    def delete_run(run_id: str):
+        meta = meta_or_404(run_id)
+        if meta.get("status") == "running":
+            raise HTTPException(409, "This analysis is still running. Delete it once it finishes.")
+        runs.store.delete_run(run_id)
+        return Response(status_code=204)
 
     @app.get("/api/runs/{run_id}/report.pdf")
     def report_pdf(run_id: str):
