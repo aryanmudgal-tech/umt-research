@@ -14,7 +14,8 @@ from google.adk.agents import LlmAgent
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
-from agent.config import VERIFIER_MODELS, retryable_error
+from agent import config
+from agent.config import VERIFIER_MODELS, gemini_model, retryable_error, within_budget
 from agent.orchestrator import closed_form_case
 from agent.recorder import to_plain
 from agent.trace import attach_observers, tracer
@@ -111,7 +112,7 @@ def _tool_error(tool=None, args=None, tool_context=None, error=None, **_extra):
 def build_verifier(name: str, tools: list) -> LlmAgent:
     agent = LlmAgent(
         name="verifier",
-        model=name,
+        model=gemini_model(name),
         instruction=_INSTRUCTION,
         tools=tools,
         on_tool_error_callback=_tool_error,
@@ -228,7 +229,7 @@ def run_verifier(
         )
         agent = build_verifier(name, tools)
         try:
-            text = asyncio.run(_run_once(agent, prompt))
+            text = asyncio.run(within_budget(_run_once(agent, prompt), config.VERIFIER_BUDGET_S, name))
         except Exception as exc:
             if retryable_error(exc):
                 print(f"[verifier] {name} unavailable ({exc}); trying next model")

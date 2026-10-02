@@ -2,6 +2,7 @@
 
 from google.adk.agents import LlmAgent
 
+from agent.config import gemini_model
 from agent.recorder import solve_beam_3d, solve_with_equation
 from agent.trace import attach_observers
 from tools.fem.analytical import closed_form
@@ -144,7 +145,7 @@ def closed_form_case(
 def build_orchestrator(model_name: str) -> LlmAgent:
     agent = LlmAgent(
         name="orchestrator",
-        model=model_name,
+        model=gemini_model(model_name),
         instruction=_instruction,
         tools=[
             solve_beam_3d,

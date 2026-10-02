@@ -25,7 +25,8 @@ import sympy as sp  # noqa: E402
 from google.adk.runners import InMemoryRunner  # noqa: E402
 from google.genai import types  # noqa: E402
 
-from agent.config import ORCHESTRATOR_MODELS, load_api_key, retryable_error, verifier_roster  # noqa: E402
+from agent import config  # noqa: E402
+from agent.config import ORCHESTRATOR_MODELS, load_api_key, retryable_error, verifier_roster, within_budget  # noqa: E402
 from agent.gates import (  # noqa: E402
     check_status,
     detect_ss_udl,
@@ -128,7 +129,9 @@ def run_orchestrator(brief_text: str):
         recorder.reset()
         runner = InMemoryRunner(agent=build_orchestrator(name), app_name="phase1")
         try:
-            narrative = asyncio.run(_run_agent(runner, brief_text))
+            narrative = asyncio.run(
+                within_budget(_run_agent(runner, brief_text), config.ORCHESTRATOR_BUDGET_S, name)
+            )
         except Exception as exc:
             if retryable_error(exc):
                 print(f"[orchestrator] {name} unavailable ({exc}); trying next model")

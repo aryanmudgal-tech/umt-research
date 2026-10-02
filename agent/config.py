@@ -1,10 +1,14 @@
 """Model rosters and environment loading for the Phase-1 harness."""
 
+import asyncio
 import os
 import re
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
+from google.adk.models.google_llm import Gemini
+from google.genai import types
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,7 +35,41 @@ VERIFIER_MODELS = [
     "gemini-3.6-flash",
 ]
 
-_RETRYABLE_MARKERS = ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded")
+_RETRYABLE_MARKERS = (
+    "503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded", "timed out",
+    "no answer within",
+)
+
+# A 503 or 429 is usually a blip: retry the same call with backoff (about 2 s,
+# 4 s, 8 s) before the model is given up on for this run. Without this a single
+# blip on the second of two calls threw away a model that was answering.
+RETRY_OPTIONS = types.HttpRetryOptions(
+    attempts=4,
+    initial_delay=2.0,
+    max_delay=16.0,
+    http_status_codes=[429, 500, 502, 503, 504],
+)
+
+# Time budget for one model's whole turn, all its calls and retries included.
+# A model that accepts a request and never answers raises nothing, so without
+# a budget the fallback never starts: one run sat in the orchestrator stage for
+# over three minutes. A healthy orchestrator turn takes about 15 s and a
+# verifier turn, with its tool calls, under a minute.
+ORCHESTRATOR_BUDGET_S = 150
+VERIFIER_BUDGET_S = 240
+
+
+def gemini_model(name: str) -> Gemini:
+    """A Gemini model handle that retries transient overload on its own."""
+    return Gemini(model=name, retry_options=RETRY_OPTIONS)
+
+
+async def within_budget(coroutine, budget_s: float, name: str):
+    """Await coroutine, or raise TimeoutError naming the model past budget_s."""
+    try:
+        return await asyncio.wait_for(coroutine, budget_s)
+    except TimeoutError as exc:
+        raise TimeoutError(f"{name}: no answer within {budget_s:g} s") from exc
 
 
 def load_api_key() -> str:
@@ -71,6 +109,12 @@ def verifier_roster(orchestrator_model: str) -> list:
 
 
 def retryable_error(exc: BaseException) -> bool:
-    """True for overload/quota errors worth retrying on the next model."""
-    text = str(exc)
-    return any(marker in text for marker in _RETRYABLE_MARKERS)
+    """True for overload, quota and timeout errors worth trying the next model for."""
+    seen = exc
+    while seen is not None:
+        if isinstance(seen, (TimeoutError, httpx.TimeoutException)):
+            return True
+        if any(marker in str(seen) for marker in _RETRYABLE_MARKERS):
+            return True
+        seen = seen.__cause__
+    return False
