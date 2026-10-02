@@ -25,3 +25,4 @@ playwright
 # Dev
 pytest
 httpx
+pypdf

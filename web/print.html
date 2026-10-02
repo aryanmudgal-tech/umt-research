@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Report</title>
+<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="print">
+<article id="report" class="doc"></article>
+<script id="report-data" type="application/json">__REPORT_JSON__</script>
+<script src="/static/vendor/katex/katex.min.js"></script>
+<script src="/static/vendor/markdown-it.min.js"></script>
+<script src="/static/vendor/texmath.js"></script>
+<script src="/static/render.js"></script>
+<script>
+  const data = JSON.parse(document.getElementById("report-data").textContent);
+  document.title = data.title;
+  window.renderMarkdown(data.md, document.getElementById("report"), { foldCode: false });
+  window.__rendered = true;
+</script>
+</body>
+</html>
