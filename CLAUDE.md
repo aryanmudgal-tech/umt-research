@@ -50,7 +50,7 @@ backoff, each model turn has a time budget, and the roster falls back. Tests
 must never call an LLM or the network.
 
 The professor uses the agent only through the website (`web/`), which has no
-login by his and Aryan's decision; don't add one. It deploys to Cloud Run with
+login, by Aryan's decision; don't add one. It deploys to Cloud Run with
 `deploy/cloudrun.sh`.
 
 ## How the system is built
