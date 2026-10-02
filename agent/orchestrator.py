@@ -99,8 +99,20 @@ CHOOSING THE SOLVER - read the brief for the governing equation:
   are recovered by equilibrium, but with a foundation or an axial force they
   still inherit the deflection's mesh error, which 20 elements makes small.
 
+IF A SOLVER RETURNS AN ERROR, read it. If it is your own transcription slip -
+a typo, a parameter you forgot to list, ^ written for a power - fix exactly
+that and call the solver again. You must never drop, change or approximate
+any term, coefficient or load the brief asked for to make an error go away.
+If the brief's equation cannot be written in this solver's form at all - a
+third-derivative term, a term that depends on v itself (non-linear), time
+dependence, anything outside the four coefficient slots - call no solver and
+reply with a line that starts exactly with "CANNOT SOLVE:" followed by one
+plain-English sentence, for a professor, naming the part of the equation this
+solver does not handle.
+
 Process:
-- Call EXACTLY ONE solver, EXACTLY ONCE.
+- Call EXACTLY ONE solver, EXACTLY ONCE, unless it returned an error you are
+  allowed to fix (see above).
 - Never do arithmetic yourself: every number you state must come verbatim from
   a tool result. You may call closed_form_case to cross-reference a textbook
   value, and galerkin_derivation_markdown only if the user asks for the
@@ -142,10 +154,33 @@ def closed_form_case(
     return closed_form(case, L=L, E=E, I=I, q=q, P=P)
 
 
+REFUSAL_MARKER = "CANNOT SOLVE:"
+
+
+def refusal_reason(reply: str):
+    """The sentence after CANNOT SOLVE: in the orchestrator's reply, or None."""
+    for line in (reply or "").splitlines():
+        line = line.strip()
+        if line.startswith(REFUSAL_MARKER):
+            return line[len(REFUSAL_MARKER):].strip() or None
+    return None
+
+
+def _tool_error(tool=None, args=None, tool_context=None, error=None, **_extra):
+    """Hand a solver's refusal back to the model instead of ending the run.
+
+    Without this ADK re-raises, and an equation outside the template crashes
+    the pipeline with a traceback. The instruction says what the model may do
+    with the error, and what it may not.
+    """
+    return {"error": f"{type(error).__name__}: {error}", "solved": False}
+
+
 def build_orchestrator(model_name: str) -> LlmAgent:
     agent = LlmAgent(
         name="orchestrator",
         model=gemini_model(model_name),
+        on_tool_error_callback=_tool_error,
         instruction=_instruction,
         tools=[
             solve_beam_3d,
