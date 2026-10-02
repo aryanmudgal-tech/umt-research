@@ -1,29 +1,30 @@
 # Brief: 25 m beam on soil
 
-Analyze a bridge beam that rests on the ground along its whole length:
+A bridge beam resting on the ground along its whole length.
 
 - Simply supported: pinned at one end, roller at the other.
 - Span: 25 m.
 - Elastic modulus: E = 30 GPa.
-- Second moment of area about the bending axis: I = 0.005 m^4.
-- Loading: uniform distributed load q = 30 kN/m acting downward over the full span.
-- The beam rests on soil with a modulus of subgrade reaction k = 1.0e7 N/m per metre of span.
+- Second moment of area about the bending axis: I = 0.005 m⁴.
+- Loading: uniform distributed load q = 30 kN/m, downward, over the full span.
 
-Report the midspan deflection, the maximum bending moment, and the support
-shear forces.
+## Governing equation
 
-Use this governing equation (EI v'''' + k v = q, with downward negative):
+Beam on elastic foundation (Winkler):
 
-```json
-{
-  "label": "Beam on elastic foundation",
-  "coeffs": {"v4": "E*I", "v2": "0", "v1": "0", "v0": "k"},
-  "rhs": "q",
-  "params": {"E": 30e9, "I": 0.005, "k": 1.0e7, "q": -30e3}
-}
-```
+$$EI\,\frac{d^4v}{dx^4} + k\,v = q$$
 
-To analyze a different beam, change the numbers above. To change the physics,
-describe it in words (an axial force, a depth that varies along the span) or
-edit the equation: v4 is the bending stiffness, v2 an axial force
-(compression positive), v0 the soil stiffness, and rhs the load.
+- E = 30 GPa, I = 0.005 m⁴
+- k = 1.0 × 10⁷ N/m² (modulus of subgrade reaction, per metre of beam)
+- q = 30 kN/m, downward
+
+## Report
+
+The midspan deflection, the maximum bending moment, and the support shear
+forces.
+
+---
+
+To analyze another beam, change the numbers above. To change the physics,
+change the equation: an axial force adds a P·d²v/dx² term (compression
+positive), and a section that varies along the span makes EI a function of x.

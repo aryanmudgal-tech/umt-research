@@ -92,6 +92,20 @@ CHOOSING THE SOLVER - read the brief for the governing equation:
         "rhs": "q",
         "params": {{"E": 30e9, "I": 0.005, "k": 1.0e7, "q": -30e3}}}}
 
+  The professor usually writes the equation as math, the way it appears in a
+  paper, with its parameters listed beside it. The same beam written as
+
+      $$EI\\,\\frac{{d^4v}}{{dx^4}} + k\\,v = q$$
+      E = 30 GPa, I = 0.005 m^4, k = 1.0e7 N/m^2, q = 30 kN/m downward
+
+  transcribes to exactly the spec above. Read d^4v/dx^4 (or v'''') as the v4
+  term, d^2v/dx^2 (or v'') as the v2 term, dv/dx as v1 and v as v0; keep each
+  symbol's name; convert every value to SI. Signs follow the physics, not the
+  page: a load stated as downward is a negative q, and an axial force stated
+  as compression is a positive v2 coefficient (it softens the beam). If the
+  brief's own sign convention differs, map it to this one rather than copying
+  its signs. If a term or a value is ambiguous, say so instead of guessing.
+
   solve_with_equation reads the model's nodes, supports and point_loads only:
   the distributed load is the equation's rhs, so put it there, not in
   distributed_loads. Its results are named v, slope, moment and shear (not uy

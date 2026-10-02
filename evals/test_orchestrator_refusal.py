@@ -39,3 +39,10 @@ def test_the_refusal_reason_is_read_from_the_reply():
     assert refusal_reason(reply) == "the equation has a third-derivative term, which this solver does not support."
     assert refusal_reason("All done, the midspan deflection is 3 mm.") is None
     assert refusal_reason("") is None
+
+
+def test_the_instruction_shows_how_an_equation_written_as_math_maps():
+    """The professor writes equations as math; the example must survive the f-string intact."""
+    assert r"$$EI\,\frac{d^4v}{dx^4} + k\,v = q$$" in _INSTRUCTION
+    assert "\f" not in _INSTRUCTION  # a lost backslash turns \frac into a form feed
+    assert "a load stated as downward is a negative q" in _INSTRUCTION
