@@ -34,10 +34,11 @@ gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregi
 if [[ -n "${BILLING_ACCOUNT:-}" ]]; then
   say "Budget alert first, before anything that could cost money: email past \$1"
   gcloud services enable billingbudgets.googleapis.com "${G[@]}"
+  # The Budgets API needs a quota project with it enabled; gcloud's own is not.
   existing="$(gcloud billing budgets list --billing-account "$BILLING_ACCOUNT" \
-    --filter "displayName='$SERVICE budget'" --format 'value(name)' 2>/dev/null)"
+    --billing-project "$PROJECT" --filter "displayName='$SERVICE budget'" --format 'value(name)')"
   if [[ -z "$existing" ]]; then
-    gcloud billing budgets create --billing-account "$BILLING_ACCOUNT" \
+    gcloud billing budgets create --billing-account "$BILLING_ACCOUNT" --billing-project "$PROJECT" \
       --display-name "$SERVICE budget" --budget-amount 1USD \
       --filter-projects "projects/$PROJECT" \
       --threshold-rule percent=0.5 --threshold-rule percent=1.0 --quiet >/dev/null
