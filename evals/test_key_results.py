@@ -118,7 +118,7 @@ def test_the_section_reads_in_engineering_units_and_plain_directions():
     assert "| Reaction at N0 (pin, x = 0 m) | 41.77 kN upward |" in md
 
 
-def test_the_report_puts_key_results_right_after_the_brief(tmp_path, monkeypatch):
+def test_the_report_opens_with_the_key_results(tmp_path, monkeypatch):
     model = equation_model(20)
     result = solve_equation_beam(model, WINKLER)
     det = {"passed": True, "checks": [], "tally": {"passed": 0, "failed": 0, "skipped": 0, "total": 0}}
@@ -126,4 +126,4 @@ def test_the_report_puts_key_results_right_after_the_brief(tmp_path, monkeypatch
     path = run_phase1.write_report("# Brief\n\nSoil.", "m", model, result, det, verdict, True, WINKLER, path=tmp_path / "r.md")
 
     text = path.read_text()
-    assert text.index("## Brief") < text.index("## Key results") < text.index("## Governing equation")
+    assert text.index("## Key results") < text.index("## Brief") < text.index("## Governing equation")

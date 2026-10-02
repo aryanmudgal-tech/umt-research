@@ -300,15 +300,18 @@ def write_report(
         f"- Solver: {'solve_with_equation' if equation is not None else 'solve_beam_3d'}",
         f"- Final gate: {banner}",
         "",
+    ]
+    # the answers come first: they are what the reader came for
+    try:
+        lines += [key_results_markdown(key_results(model_dict, result, equation))]
+    except Exception as exc:  # a report without the summary beats no report
+        lines += ["## Key results", "", f"The key results could not be extracted: {exc}", ""]
+    lines += [
         "## Brief",
         "",
         _nest(brief_text.strip()),
         "",
     ]
-    try:
-        lines += [key_results_markdown(key_results(model_dict, result, equation))]
-    except Exception as exc:  # a report without the summary beats no report
-        lines += ["## Key results", "", f"The key results could not be extracted: {exc}", ""]
     if equation is not None:
         lines += _equation_section(equation, result)
     else:
