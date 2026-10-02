@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The 25-Meter Agent</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M3 12 C 10 20, 22 20, 29 12' fill='none' stroke='%232d5b88' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M3 14 l-3 7 h6 z M29 14 l-3 7 h6 z' fill='%234c5c56'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">The 25-Meter Agent</a>
+  <span class="brand-sub">Beam analysis with checked results</span>
+  <a class="topbar-link" href="/sample-brief.md" download>Download a sample brief</a>
+</header>
+
+<div class="layout">
+  <aside class="history" aria-labelledby="history-title">
+    <h2 id="history-title">Past runs</h2>
+    <ol id="runs" class="runs"></ol>
+    <p id="runs-empty" class="muted" hidden>Your analyses will be listed here.</p>
+  </aside>
+
+  <main>
+    <section id="view-upload">
+      <h1>Analyze a beam</h1>
+      <p class="lede">Upload a brief written in markdown: the beam, its supports and loads, the equation that governs it, and what you want reported.</p>
+      <button id="drop" class="drop" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 17v-6m-3 3 3-3 3 3"/></svg>
+        <strong>Drop your brief here, or choose a file</strong>
+        <small>A .md file, up to 200 KB</small>
+      </button>
+      <input id="file" type="file" accept=".md,text/markdown" hidden>
+      <p id="upload-error" class="error" role="alert" hidden></p>
+
+      <div id="preview-wrap" hidden>
+        <div class="preview-bar">
+          <span id="preview-name" class="name"></span>
+          <button id="choose-again" class="btn" type="button">Choose another file</button>
+          <button id="run" class="btn btn-primary" type="button">Run analysis</button>
+        </div>
+        <article id="preview" class="sheet doc" aria-label="Your brief"></article>
+      </div>
+    </section>
+
+    <section id="view-run" hidden>
+      <div class="run-head">
+        <h1 id="run-title"></h1>
+        <p id="run-clock" class="muted"></p>
+      </div>
+      <ol id="stages" class="stages" aria-label="Progress"></ol>
+      <div id="stage-panel" class="stage-panel"></div>
+      <div class="explain" aria-live="polite">
+        <h2 id="explain-title"></h2>
+        <p id="explain-body"></p>
+        <p id="explain-note" class="note" hidden></p>
+      </div>
+      <div id="run-outcome" class="outcome" hidden></div>
+    </section>
+
+    <section id="view-report" hidden>
+      <div class="run-head report-head">
+        <h1 id="report-title"></h1>
+        <p id="report-when" class="muted"></p>
+      </div>
+      <div id="verdict" class="verdict"></div>
+      <div class="report-actions">
+        <a id="dl-pdf" class="btn btn-primary" href="#" download>Download PDF</a>
+        <a id="dl-md" class="btn" href="#" download>Download markdown</a>
+        <a class="btn btn-quiet" href="#/">Analyze another brief</a>
+      </div>
+      <h2 id="report-label" class="muted" hidden>Your brief</h2>
+      <article id="report" class="sheet doc"></article>
+    </section>
+  </main>
+</div>
+
+<script src="/static/vendor/katex/katex.min.js"></script>
+<script src="/static/vendor/markdown-it.min.js"></script>
+<script src="/static/vendor/texmath.js"></script>
+<script src="/static/render.js"></script>
+<script src="/static/scenes.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
