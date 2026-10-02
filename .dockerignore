@@ -1,0 +1,19 @@
+# Never ship the key: on Cloud Run it comes from Secret Manager.
+.env
+.env.*
+
+.git/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+results/
+web_runs/
+sandbox/
+evals/
+spike/
+scripts/
+docs/
+*.md
+!web/sample_brief.md
