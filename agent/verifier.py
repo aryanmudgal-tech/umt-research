@@ -30,7 +30,10 @@ _INSTRUCTION = (
     "to REFUTE the results. Finding nothing wrong must be justified check "
     "by check. Every reference number you compare against must come from one "
     "of your tools; do not compute reference values yourself. If a tool "
-    "returns an error, that check verified nothing: say so."
+    "returns an error, that check verified nothing: say so. A civil "
+    "engineering professor reads each check's name and detail as you write "
+    "them: use engineering terms and values with units (\"midspan deflection "
+    "3.015 mm vs 3.015 mm\"), never code, field or tool names."
 )
 
 

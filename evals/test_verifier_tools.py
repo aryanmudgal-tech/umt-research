@@ -119,3 +119,4 @@ def test_the_verifier_is_told_to_take_reference_numbers_from_its_tools(monkeypat
     instruction, prompt = prompts[0]
     assert "independent_equation_check" in prompt
     assert "do not compute reference values yourself" in instruction
+    assert "never code, field or tool names" in instruction
