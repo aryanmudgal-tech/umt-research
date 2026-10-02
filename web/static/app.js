@@ -4,9 +4,9 @@
 
   const STAGES = [
     ["reading", "Reading the brief"],
-    ["modeling", "Building the model"],
+    ["modeling", "Building the FE model"],
     ["solving", "Solving"],
-    ["checking", "Checking the numbers"],
+    ["checking", "Verification checks"],
     ["independent", "Independent check"],
     ["report", "Writing the report"],
   ];
@@ -40,16 +40,19 @@
     window.scrollTo(0, 0);
   }
 
+  const RUN_ROUTE = /^#\/run\/([0-9a-f-]+)(\/how)?$/;
+
   function route() {
     const hash = location.hash || "#/";
-    const match = hash.match(/^#\/run\/([0-9a-f-]+)$/);
+    const match = hash.match(RUN_ROUTE);
     markCurrent(match ? match[1] : null);
+    closeMenus();
     if (match) {
       if (current && current.id === match[1] && !current.finished) {
         location.replace("#/running");
         return;
       }
-      openRun(match[1]);
+      openRun(match[1], match[2] ? "how" : "report");
     } else if (hash === "#/running" && current) {
       show("run");
     } else {
@@ -57,6 +60,7 @@
         current = null;
         resetUpload();
       }
+      $("still-running").hidden = !(current && !current.finished);
       show("upload");
     }
   }
@@ -69,12 +73,24 @@
     uploadError("");
   }
 
+  function newBrief() {
+    resetUpload();
+    if (location.hash === "#/" || location.hash === "") route();
+    else location.hash = "#/";
+  }
+
   // ------------------------------------------------------------ past runs
 
   function when(iso) {
     const date = new Date(iso);
     if (isNaN(date)) return "";
     return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+  }
+
+  function el(tag, props, children) {
+    const node = Object.assign(document.createElement(tag), props || {});
+    (children || []).forEach((child) => node.append(child));
+    return node;
   }
 
   async function loadRuns() {
@@ -88,28 +104,110 @@
     const list = $("runs");
     list.textContent = "";
     $("runs-empty").hidden = runs.length > 0;
-    runs.forEach((run) => {
-      const status = STATUS[run.status] || STATUS.error;
-      const li = document.createElement("li");
-      const a = document.createElement("a");
-      a.href = current && current.id === run.id && !current.finished ? "#/running" : "#/run/" + run.id;
-      a.dataset.run = run.id;
-      const title = document.createElement("span");
-      title.textContent = run.title || "Untitled brief";
-      const meta = document.createElement("span");
-      meta.className = "run-when";
-      const time = document.createElement("span");
-      time.textContent = when(run.created);
-      const badge = document.createElement("span");
-      badge.className = "badge " + BADGE_CLASS[status.tone];
-      badge.textContent = status.badge;
-      meta.append(time, badge);
-      a.append(title, meta);
-      li.append(a);
-      list.append(li);
-    });
-    const match = (location.hash || "").match(/^#\/run\/([0-9a-f-]+)$/);
+    runs.forEach((run) => list.append(runItem(run)));
+    const match = (location.hash || "").match(RUN_ROUTE);
     markCurrent(match ? match[1] : null);
+  }
+
+  function runItem(run) {
+    const status = STATUS[run.status] || STATUS.error;
+    const li = el("li");
+    li.dataset.run = run.id;
+    const live = current && current.id === run.id && !current.finished;
+    const link = el("a", { href: live ? "#/running" : "#/run/" + run.id });
+    link.dataset.run = run.id;
+    link.append(
+      el("span", { textContent: run.title || "Untitled brief" }),
+      el("span", { className: "run-when" }, [
+        el("span", { textContent: when(run.created) }),
+        el("span", { className: "badge " + BADGE_CLASS[status.tone], textContent: status.badge }),
+      ])
+    );
+    const more = el("button", { type: "button", className: "run-more", textContent: "⋯" });
+    more.setAttribute("aria-label", "Options for " + (run.title || "this run"));
+    more.setAttribute("aria-haspopup", "true");
+    more.setAttribute("aria-expanded", "false");
+    more.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = more.getAttribute("aria-expanded") === "true";
+      closeMenus();
+      if (!open) openMenu(li, more, run);
+    });
+    li.append(el("div", { className: "row" }, [link, more]));
+    return li;
+  }
+
+  function closeMenus() {
+    document.querySelectorAll(".run-menu").forEach((menu) => menu.remove());
+    document.querySelectorAll(".run-more[aria-expanded='true']").forEach((b) => b.setAttribute("aria-expanded", "false"));
+  }
+
+  function openMenu(li, button, run) {
+    button.setAttribute("aria-expanded", "true");
+    const rename = el("button", { type: "button", textContent: "Rename" });
+    rename.addEventListener("click", () => startRename(li, run));
+    const items = [rename];
+    if (run.status !== "running") {
+      const remove = el("button", { type: "button", className: "danger", textContent: "Delete" });
+      remove.addEventListener("click", () => confirmDelete(li, run));
+      items.push(remove);
+    }
+    const menu = el("div", { className: "run-menu" }, items);
+    menu.setAttribute("role", "menu");
+    items.forEach((item) => item.setAttribute("role", "menuitem"));
+    li.append(menu);
+    rename.focus();
+  }
+
+  function startRename(li, run) {
+    closeMenus();
+    const input = el("input", { type: "text", value: run.title || "", maxLength: 120 });
+    input.setAttribute("aria-label", "New name for the run");
+    const save = el("button", { type: "button", className: "btn btn-primary btn-small", textContent: "Save" });
+    const cancel = el("button", { type: "button", className: "btn btn-small", textContent: "Cancel" });
+    const form = el("div", { className: "rename" }, [input, el("div", { className: "actions" }, [save, cancel])]);
+    li.replaceChildren(form);
+    input.focus();
+    input.select();
+    const done = async (keep) => {
+      const title = input.value.trim();
+      if (keep && title && title !== run.title) {
+        const response = await fetch("/api/runs/" + run.id, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title }),
+        });
+        if (response.ok && location.hash.match(RUN_ROUTE) && location.hash.includes(run.id)) {
+          $("report-title").textContent = title;
+        }
+      }
+      loadRuns();
+    };
+    save.addEventListener("click", () => done(true));
+    cancel.addEventListener("click", () => done(false));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") done(true);
+      if (e.key === "Escape") done(false);
+    });
+  }
+
+  function confirmDelete(li, run) {
+    closeMenus();
+    const yes = el("button", { type: "button", className: "btn btn-danger btn-small", textContent: "Delete" });
+    const no = el("button", { type: "button", className: "btn btn-small", textContent: "Cancel" });
+    li.replaceChildren(
+      el("div", { className: "confirm" }, [
+        el("p", { textContent: "Delete “" + (run.title || "this run") + "”? Its report and PDF go too." }),
+        el("div", { className: "actions" }, [yes, no]),
+      ])
+    );
+    no.focus();
+    no.addEventListener("click", () => loadRuns());
+    yes.addEventListener("click", async () => {
+      await fetch("/api/runs/" + run.id, { method: "DELETE" });
+      if ((location.hash || "").includes(run.id)) location.hash = "#/";
+      loadRuns();
+    });
   }
 
   function markCurrent(runId) {
@@ -385,63 +483,152 @@
 
   // ----------------------------------------------------------- a report
 
-  async function openRun(id) {
+  const ICON = {
+    pass: '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    fail: '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    skipped: '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    fact: '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg>',
+  };
+
+  let shown = { id: null, data: null, story: null };
+
+  async function openRun(id, tab) {
     show("report");
-    const verdict = $("verdict");
-    $("report").innerHTML = "";
-    let data;
-    try {
-      const response = await fetch("/api/runs/" + id);
-      if (!response.ok) throw new Error(response.status);
-      data = await response.json();
-    } catch (e) {
-      $("report-title").textContent = "";
-      $("report-when").textContent = "";
-      verdict.className = "verdict tone-bad";
-      verdict.innerHTML = "<h2>This run can't be found</h2><p>It may have been removed. Choose another from Past runs.</p>";
-      $("dl-pdf").hidden = $("dl-md").hidden = true;
-      $("report-label").hidden = true;
-      $("report").hidden = true;
+    if (shown.id !== id) {
+      shown = { id, data: null, story: null };
+      try {
+        const response = await fetch("/api/runs/" + id);
+        if (!response.ok) throw new Error(response.status);
+        shown.data = await response.json();
+      } catch (e) {
+        missingRun();
+        return;
+      }
+      fillReport(id, shown.data);
+    }
+    if (!shown.data.report_md && tab === "report") {
+      location.replace("#/run/" + id + "/how"); // nothing to read but how it ended
       return;
     }
+    $("tab-report").href = "#/run/" + id;
+    $("tab-how").href = "#/run/" + id + "/how";
+    $("tab-report").hidden = !shown.data.report_md;
+    [["tab-report", "report"], ["tab-how", "how"]].forEach(([el_id, name]) => {
+      if (tab === name) $(el_id).setAttribute("aria-current", "page");
+      else $(el_id).removeAttribute("aria-current");
+    });
+    $("pane-report").hidden = tab !== "report";
+    $("pane-how").hidden = tab !== "how";
+    if (tab === "how") await showStory(id);
+  }
+
+  function missingRun() {
+    $("report-title").textContent = "";
+    $("report-when").textContent = "";
+    const verdict = $("verdict");
+    verdict.className = "verdict tone-bad";
+    verdict.innerHTML = "<h2>This run can't be found</h2><p>It may have been deleted. Choose another from Past runs.</p>";
+    $("dl-pdf").hidden = $("dl-md").hidden = true;
+    document.querySelector(".tabs").hidden = true;
+    $("pane-report").hidden = $("pane-how").hidden = true;
+  }
+
+  function fillReport(id, data) {
+    document.querySelector(".tabs").hidden = false;
     const meta = data.meta;
     const status = STATUS[meta.status] || STATUS.error;
+    const verdict = $("verdict");
     verdict.className = "verdict tone-" + status.tone;
-    verdict.innerHTML = "";
     $("report-title").textContent = meta.title || "Your brief";
     $("report-when").textContent = when(meta.created) + (meta.duration_s ? ", took " + Math.round(meta.duration_s) + " s" : "");
-    const h = document.createElement("h2");
-    h.textContent = status.title;
-    const p = document.createElement("p");
-    p.textContent =
+    const message =
       meta.message ||
       (meta.status === "interrupted"
         ? "The page was closed or the connection dropped before it finished. Run the brief again to get a report."
         : meta.status === "running"
           ? "This analysis is still going. Check back in a minute."
           : "");
-    verdict.append(h, p);
+    verdict.replaceChildren(el("h2", { textContent: status.title }), el("p", { textContent: message }));
 
     $("dl-pdf").href = "/api/runs/" + id + "/report.pdf";
     $("dl-md").href = "/api/runs/" + id + "/report.md";
     $("dl-pdf").hidden = !meta.has_pdf;
     $("dl-md").hidden = !data.report_md;
     const article = $("report");
-    article.hidden = false;
     if (data.report_md) {
       $("report-label").hidden = true;
       window.renderMarkdown(data.report_md, article, { foldCode: true });
-    } else if (data.brief_md) {
-      $("report-label").hidden = false;
-      window.renderMarkdown(data.brief_md, article, { foldCode: true });
     } else {
-      article.hidden = true;
+      article.innerHTML = "";
     }
+    $("story").innerHTML = "";
+  }
+
+  async function showStory(id) {
+    const list = $("story");
+    if (shown.story) return;
+    list.innerHTML = '<li class="muted">Loading the steps…</li>';
+    try {
+      const response = await fetch("/api/runs/" + id + "/story");
+      if (!response.ok) throw new Error(response.status);
+      shown.story = await response.json();
+    } catch (e) {
+      list.innerHTML = "";
+      list.append(el("li", { className: "muted", textContent: "No record of the steps was kept for this run." }));
+      return;
+    }
+    list.innerHTML = "";
+    shown.story.steps.forEach((step) => list.append(storyStep(step)));
+  }
+
+  function storyStep(step) {
+    const body = el("div", {}, [el("h3", { textContent: step.title }), el("p", { className: "summary", textContent: step.summary })]);
+    if (step.tex) {
+      const eq = el("div", { className: "equation" });
+      try {
+        window.katex.render(step.tex, eq, { displayMode: true, throwOnError: false });
+      } catch (e) {
+        eq.textContent = step.tex;
+      }
+      body.append(eq);
+    }
+    if (step.items && step.items.length) {
+      const items = el("ul", { className: "items" });
+      step.items.forEach((item) => items.append(storyItem(item)));
+      body.append(items);
+    }
+    if (step.verdict) {
+      body.append(el("p", { className: "verdict-line " + (step.status === "failed" ? "bad" : "ok"), textContent: step.verdict }));
+    }
+    // the step number is the li's ::before, which takes the grid's first column
+    return el("li", { className: step.status === "failed" ? "failed" : "done" }, [body]);
+  }
+
+  function storyItem(item) {
+    const kind = item.status || "fact";
+    const li = el("li", { className: kind });
+    li.innerHTML = ICON[kind] || ICON.fact;
+    const text = el("div");
+    const title = el("strong", { textContent: item.text });
+    text.append(title);
+    if (kind === "skipped") title.after(el("span", { className: "tag skip", textContent: "Skipped" }));
+    if (kind === "fail") title.after(el("span", { className: "tag fail", textContent: "Failed" }));
+    if (item.detail) text.append(el("p", { className: "what", textContent: item.detail }));
+    if (item.evidence) text.append(el("p", { className: "evidence", textContent: item.evidence }));
+    li.append(text);
+    return li;
   }
 
   // ---------------------------------------------------------------- start
 
   wireUpload();
+  $("new-brief").addEventListener("click", newBrief);
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".run-menu")) closeMenus();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeMenus();
+  });
   window.addEventListener("hashchange", route);
   loadRuns();
   route();

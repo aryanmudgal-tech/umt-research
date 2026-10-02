@@ -130,12 +130,47 @@ def test_the_run_is_listed_and_reopens(finished_page):
     page, _errors, _ = finished_page
     item = page.locator("#runs a").first
     assert "25 m beam on soil" in item.inner_text() and "Verified" in item.inner_text()
-    page.click("text=Analyze another brief")
+    page.click("#new-brief")
     page.wait_for_selector("#drop", state="visible")  # a fresh upload, not the last brief
     assert not page.is_visible("#preview-wrap")
     item.click()
     page.wait_for_selector("#report .katex-display")
     assert "Key results" in page.inner_text("#report")
+
+
+def test_how_the_answer_was_reached_reads_as_numbered_engineering_steps(finished_page):
+    page, _errors, _ = finished_page
+    page.click("#tab-how")
+    page.wait_for_selector("#story > li >> nth=6")
+    titles = page.locator("#story h3").all_inner_texts()
+    assert titles == [
+        "Read the brief", "Governing equation", "Finite element model", "Solution",
+        "Verification checks", "Independent check", "Report",
+    ]
+    text = page.inner_text("#story")
+    assert "Hermite cubic beam elements" in text
+    assert "Supports 83.5 kN + foundation 666.5 kN = 750 kN = applied load." in text
+    assert page.locator("#story .equation .katex").count() == 1  # the governing equation, typeset
+    assert page.locator("#story .items li.skipped").count() == 2
+    assert "Result confirmed" in text
+    page.click("#tab-report")
+    page.wait_for_selector("#report .katex-display", state="visible")
+
+
+def test_a_past_run_can_be_renamed_and_deleted(finished_page):
+    page, _errors, _ = finished_page
+    page.click("#runs .run-more")
+    page.click(".run-menu >> text=Rename")
+    page.fill(".rename input", "Soil beam, first try")
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#runs a >> text=Soil beam, first try")
+
+    page.click("#runs .run-more")
+    page.click(".run-menu >> text=Delete")
+    assert "Delete \u201cSoil beam, first try\u201d?" in page.inner_text(".confirm")
+    page.click(".confirm button.btn-danger")
+    page.wait_for_selector("#runs-empty", state="visible")
+    assert page.locator("#runs li").count() == 0
 
 
 def test_no_script_errors(finished_page):

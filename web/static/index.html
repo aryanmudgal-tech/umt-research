@@ -17,6 +17,10 @@
 
 <div class="layout">
   <aside class="history" aria-labelledby="history-title">
+    <button id="new-brief" class="btn btn-primary new-brief" type="button">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      New brief
+    </button>
     <h2 id="history-title">Past runs</h2>
     <ol id="runs" class="runs"></ol>
     <p id="runs-empty" class="muted" hidden>Your analyses will be listed here.</p>
@@ -25,7 +29,8 @@
   <main>
     <section id="view-upload">
       <h1>Analyze a beam</h1>
-      <p class="lede">Upload a brief written in markdown: the beam, its supports and loads, the equation that governs it, and what you want reported.</p>
+      <p class="lede">Upload a brief (.md): span, boundary conditions, loading, the governing equation, and the quantities to report.</p>
+      <p id="still-running" class="notice" hidden>An analysis is still running. <a href="#/running">Watch it</a></p>
       <button id="drop" class="drop" type="button">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 17v-6m-3 3 3-3 3 3"/></svg>
         <strong>Drop your brief here, or choose a file</strong>
@@ -67,11 +72,19 @@
       <div id="verdict" class="verdict"></div>
       <div class="report-actions">
         <a id="dl-pdf" class="btn btn-primary" href="#" download>Download PDF</a>
-        <a id="dl-md" class="btn" href="#" download>Download markdown</a>
-        <a class="btn btn-quiet" href="#/">Analyze another brief</a>
+        <a id="dl-md" class="btn" href="#" download>Download .md</a>
       </div>
-      <h2 id="report-label" class="muted" hidden>Your brief</h2>
-      <article id="report" class="sheet doc"></article>
+      <nav class="tabs" aria-label="Report views">
+        <a id="tab-report" class="tab" href="#">Report</a>
+        <a id="tab-how" class="tab" href="#">How this answer was reached</a>
+      </nav>
+      <div id="pane-report">
+        <h2 id="report-label" class="muted" hidden>Your brief</h2>
+        <article id="report" class="sheet doc"></article>
+      </div>
+      <div id="pane-how" hidden>
+        <ol id="story" class="story"></ol>
+      </div>
     </section>
   </main>
 </div>
