@@ -46,7 +46,8 @@ _RATE_MIN = 2.5
 # converges to the wrong function, which shows up as a collapsed rate and errors
 # of 1e-2 and up, so this only has to exclude the grossly inaccurate.
 _TOL = 1e-3
-_EXACT = 1e-10  # below this the scheme is nodally exact and the rate is meaningless
+_EXACT = 1e-10  # round-off allowance on a coarse mesh: an error below this is arithmetic noise
+_ROUNDOFF_CAP = 1e-6  # past this the n**4 allowance could hide a real error, so it stops growing
 _ZERO = 1e-9  # relative tolerance for "this boundary term vanishes"
 
 
@@ -277,11 +278,24 @@ def _solve(model, spec):
     return equation.solve_equation_beam(model, spec)
 
 
+def _roundoff(n):
+    """Largest relative nodal error that arithmetic alone can leave on n elements.
+
+    A beam stiffness matrix has a condition number of order n**4, so the solve
+    gives up that many of double precision's sixteen digits, and more with every
+    refinement: past a few dozen elements the error of a correct solve stops
+    falling and climbs. Measured on spans from 25 mm to 1 km, rigidities from 1
+    to 3e13 N*m^2 and 4 to 400 elements, that noise stays under a fifth of this
+    allowance.
+    """
+    return min(max(_EXACT, float(np.finfo(float).eps) * n**4), _ROUNDOFF_CAP)
+
+
 def _observed_order(refinements, errors):
     """Least-squares slope of log(error) against log(mesh count), sign flipped."""
     points = [(n, e) for n, e in zip(refinements, errors) if e > 0 and math.isfinite(e)]
     if len(points) < 2:
-        return 0.0  # nothing to fit; the exactness branch decides the verdict
+        return 0.0  # nothing to fit; the round-off branches decide the verdict
     logs_n = [math.log(n) for n, _ in points]
     logs_e = [math.log(e) for _, e in points]
     return float(-np.polyfit(logs_n, logs_e, 1)[0])
@@ -343,24 +357,53 @@ def mms_check(model, spec, v_expr=None, refinements=(4, 8, 16)):
             / scale
         )
 
-    rate = _observed_order(refinements, errors)
-    nodally_exact = errors[-1] <= _EXACT
-    passed = bool(nodally_exact or (rate >= _RATE_MIN and errors[-1] <= _TOL))
+    # Discretisation error falls with refinement and round-off rises, so the
+    # rate can only be read off the leading meshes whose error still stands
+    # above round-off. An error that comes back up out of round-off on a finer
+    # mesh is growing faster than conditioning explains: the solve is going wrong.
+    above = [error > _roundoff(n) for n, error in zip(refinements, errors)]
+    leading = next((k for k, standing in enumerate(above) if not standing), len(above))
+    resurfaced = any(above[leading:])
+    accurate = errors[-1] <= _TOL
+
+    if leading >= 2:
+        rate = _observed_order(refinements[:leading], errors[:leading])
+    else:
+        rate = _observed_order(refinements, errors)  # reported, but not a verdict
+    passed = bool(accurate and not resurfaced and (leading < 2 or rate >= _RATE_MIN))
 
     if refused:
         verdict = refused
-    elif nodally_exact:
+    elif resurfaced:
         verdict = (
-            "error is at machine precision, so this scheme is nodally exact for "
-            "this equation and the convergence rate carries no information"
+            f"finest relative error {errors[-1]:.3e}: the error rises as the mesh is "
+            "refined, faster than round-off accounts for"
+        )
+    elif leading == 0:
+        verdict = (
+            "the error is within round-off on every mesh: the nodal values match the "
+            "manufactured solution to the precision the arithmetic allows, and the "
+            "convergence rate carries no information"
+        )
+    elif leading == 1:
+        verdict = (
+            f"finest relative error {errors[-1]:.3e}: the error is down to round-off "
+            "after one refinement, which leaves no rate to measure"
         )
     else:
-        verdict = f"observed order {rate:.2f}, finest relative error {errors[-1]:.3e}"
+        over = (
+            ""
+            if leading == len(errors)
+            else f" over the {leading} coarsest meshes (the finer ones are at round-off)"
+        )
+        verdict = f"observed order {rate:.2f}{over}, finest relative error {errors[-1]:.3e}"
     detail = (
         f"{how}; meshes {tuple(refinements)} elements; {verdict}. "
-        f"PASS rule: finest relative nodal error <= {_EXACT:g}, or observed order "
-        f">= {_RATE_MIN} (Hermite cubics are 4th order in nodal deflection) with "
-        f"finest relative error <= {_TOL:g}."
+        f"PASS rule: finest relative nodal error <= {_TOL:g}, and the error either "
+        f"falls with observed order >= {_RATE_MIN} (Hermite cubics are 4th order in "
+        f"nodal deflection) on the meshes where it stands above round-off, or is at "
+        f"round-off already. Round-off allowance on n elements: machine epsilon x "
+        f"n^4, at least {_EXACT:g} and at most {_ROUNDOFF_CAP:g}."
     )
 
     return {

@@ -248,3 +248,109 @@ def test_supports_with_no_built_in_solution_say_so():
     pinned_one_end = _model({"N0": [True, True, True, True, False, False]})
     with pytest.raises(ValueError, match="no built-in manufactured solution"):
         mms.choose_manufactured_solution(pinned_one_end)
+
+
+# ------------------------------------------------------------- round-off
+#
+# Refining a beam mesh costs digits: the stiffness matrix has a condition number
+# of order n**4, so past a few dozen elements the nodal error of a correct solve
+# stops falling and starts to climb, purely from arithmetic. A check that reads
+# that climb as a collapsed convergence rate fails correct work, and a gate that
+# fails correct work is as broken as one that passes wrong work.
+
+FINE_MESHES = [(20, 40, 80), (50, 100, 200), (100, 200, 400)]
+
+
+@pytest.mark.parametrize("refinements", FINE_MESHES)
+@pytest.mark.parametrize("name", sorted(SPECS))
+def test_a_correct_solve_passes_however_fine_the_mesh(name, refinements):
+    result = mms.mms_check(simply_supported(), SPECS[name], refinements=refinements)
+    assert result["passed"], result["detail"]
+    assert result["errors"][-1] <= 1e-6
+
+
+@pytest.mark.parametrize("rigidity", [1.0, 1.5e8, 5.15e8, 1.05e9, 3.3e13])
+@pytest.mark.parametrize("refinements", FINE_MESHES)
+def test_a_plain_beam_passes_whatever_its_rigidity(rigidity, refinements):
+    """Nodally exact, so its error is all round-off, and which side of a fixed
+    1e-10 that lands on used to depend on the value of EI."""
+    spec = {"label": "plain beam", "coeffs": {"v4": "EI"}, "rhs": "q", "params": {"EI": rigidity, "q": Q}}
+    result = mms.mms_check(simply_supported(), spec, refinements=refinements)
+    assert result["passed"], result["detail"]
+    assert "within round-off on every mesh" in result["detail"]
+
+
+@pytest.mark.parametrize("refinements", FINE_MESHES)
+def test_a_wrong_element_matrix_still_fails_on_a_fine_mesh(monkeypatch, refinements):
+    def wrap(original):
+        def mutated(eq):
+            evaluate = original(eq)
+
+            def scaled(L, x0):
+                k, f = evaluate(L, x0)
+                k = np.array(k, dtype=float)
+                k[0, 0] *= 1.05
+                return k, f
+
+            return scaled
+
+        return mutated
+
+    _mutate(monkeypatch, wrap)
+    result = mms.mms_check(simply_supported(), SPECS["euler-bernoulli"], refinements=refinements)
+    assert not result["passed"], result["detail"]
+
+
+def _solver_with_errors(monkeypatch, relative_errors):
+    """Stand in for the solver: the exact v* at every node, off by a chosen factor."""
+    by_mesh = dict(relative_errors)
+
+    def solve(model, spec):
+        n = len(model["nodes"]) - 1
+        return {
+            "displacements": {
+                node["id"]: {"v": 0.01 * np.sin(np.pi * node["x"] / L) * (1 + by_mesh[n])}
+                for node in model["nodes"]
+            }
+        }
+
+    monkeypatch.setattr(mms, "_solve", solve)
+
+
+def _verdict_for(monkeypatch, relative_errors):
+    _solver_with_errors(monkeypatch, relative_errors)
+    return mms.mms_check(
+        simply_supported(), SPECS["euler-bernoulli"], refinements=tuple(n for n, _ in relative_errors)
+    )
+
+
+def test_the_rate_is_read_from_the_meshes_that_stand_above_round_off(monkeypatch):
+    # fourth order on the two coarse meshes, then noise where the error would be 4e-9
+    result = _verdict_for(monkeypatch, [(50, 1.0e-6), (100, 6.25e-8), (200, 3.0e-8)])
+    assert result["passed"], result["detail"]
+    assert result["rate"] == pytest.approx(4.0, abs=0.01)
+
+
+def test_an_error_that_sinks_into_round_off_after_one_refinement_passes(monkeypatch):
+    result = _verdict_for(monkeypatch, [(100, 5.0e-8), (200, 4.0e-9), (400, 9.0e-9)])
+    assert result["passed"], result["detail"]
+    assert "no rate" in result["detail"]
+
+
+def test_an_error_that_does_not_fall_fails_even_when_it_is_small(monkeypatch):
+    result = _verdict_for(monkeypatch, [(20, 2.0e-5), (40, 2.0e-5), (80, 2.0e-5)])
+    assert not result["passed"], result["detail"]
+
+
+def test_an_error_that_climbs_back_out_of_round_off_fails(monkeypatch):
+    """Round-off grows like n**4. Faster than that is the solve going wrong."""
+    result = _verdict_for(monkeypatch, [(20, 1.0e-12), (40, 1.0e-11), (80, 1.0e-4)])
+    assert not result["passed"], result["detail"]
+    assert "rises" in result["detail"]
+
+
+def test_round_off_is_never_stretched_to_cover_a_real_error(monkeypatch):
+    """Uncapped, the n**4 allowance reaches 3.5e-3 on 2000 elements and would
+    wave through an error of 5e-4 that never falls."""
+    result = _verdict_for(monkeypatch, [(1000, 5.0e-4), (2000, 5.0e-4), (4000, 5.0e-4)])
+    assert not result["passed"], result["detail"]
