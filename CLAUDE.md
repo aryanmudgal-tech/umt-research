@@ -49,9 +49,23 @@ the paid tier; Flash models still return 503 under load, so calls retry with
 backoff, each model turn has a time budget, and the roster falls back. Tests
 must never call an LLM or the network.
 
-The professor uses the agent only through the website (`web/`), which has no
-login, by Aryan's decision; don't add one. It deploys to Cloud Run with
-`deploy/cloudrun.sh`.
+Since 2026-10-23 the professor uses the agent on Google's Agent Platform
+(formerly Vertex AI): he chats with `beam_agent/` on its Playground page in the
+Cloud console. It reaches Gemini with the project's own account, no API key,
+and calls the models on the `global` endpoint (none answer in us-central1).
+Deploy changes to the same agent, from the repository root:
+
+```bash
+.venv-deploy/bin/python deploy/agent_platform.py --project gen-lang-client-0841593868 --update 3441449679584231424
+```
+
+`.venv-deploy` holds the deploy library (setup in the script's docstring). The
+cost settings live in `beam_agent/.agent_engine_config.json` (no instance kept
+running, at most one, 1 CPU) and the script refuses anything costlier. The
+project's billing is real money: ask Aryan before any deploy or cloud change.
+
+The older website (`web/`, no login by Aryan's decision; `deploy/cloudrun.sh`)
+is no longer the professor's interface and is due to be removed.
 
 ## How the system is built
 
