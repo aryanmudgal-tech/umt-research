@@ -35,6 +35,12 @@ VERIFIER_MODELS = [
     "gemini-3.6-flash",
 ]
 
+# The model that talks with the professor on Agent Platform. It only reads his
+# messages, decides when to run an analysis and answers questions about one; the
+# analysis itself runs on the rosters above, and its numbers reach him without
+# passing through this model (see beam_agent/agent.py).
+CONVERSATION_MODEL = "gemini-3.8-flash"
+
 _RETRYABLE_MARKERS = (
     "503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded", "timed out",
     "no answer within",

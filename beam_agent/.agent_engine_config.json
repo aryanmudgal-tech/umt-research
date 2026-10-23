@@ -1,0 +1,9 @@
+{
+  "display_name": "UMT Beam Agent",
+  "description": "Verified finite element beam analyses for Prof. Basaran's group: paste a brief, get checked results.",
+  "min_instances": 0,
+  "max_instances": 1,
+  "resource_limits": {"cpu": "1", "memory": "2Gi"},
+  "container_concurrency": 3,
+  "extra_packages": ["../agent", "../tools"]
+}

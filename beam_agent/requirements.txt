@@ -1,0 +1,18 @@
+# What the deployed agent needs beyond google-adk[a2a]==2.8.0, which the deploy
+# installs first. Pinned to the versions the offline tests run on, so the agent
+# on Agent Platform runs the solver that was tested.
+numpy==2.5.2
+scipy==1.18.1
+sympy==1.14.0
+mpmath==1.3.0
+PyNiteFEA==3.0.0
+httpx==0.28.1
+python-dotenv==1.2.3
+rich==15.0.0
+google-genai==2.22.0
+google-cloud-aiplatform[agent_engines]==2.6.0
+# google-adk 2.8 caps opentelemetry-api at 1.42.1, and newer google-api-core
+# needs more, so both are held where the local environment has them
+google-api-core==2.30.0
+opentelemetry-api==1.42.1
+opentelemetry-sdk==1.42.1
