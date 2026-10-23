@@ -449,6 +449,7 @@ class RunOutcome:
     model_used: str | None = None
     verdict: dict | None = None
     gate: dict | None = None
+    equation: dict | None = None  # the governing equation solved, None for the standard beam
 
 
 def _pipeline(brief_path, brief_text, html_path, json_path, started, report_path=None):
@@ -512,6 +513,7 @@ def _pipeline(brief_path, brief_text, html_path, json_path, started, report_path
         model_used=model_used,
         verdict=verdict,
         gate=det,
+        equation=equation,
     )
 
 
