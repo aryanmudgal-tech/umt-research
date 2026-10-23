@@ -84,7 +84,7 @@ def test_the_cli_still_writes_to_the_results_report(monkeypatch, tmp_path):
     fake_agents(monkeypatch)
     report = tmp_path / "phase1_report.md"
     monkeypatch.setattr(run_phase1, "REPORT_PATH", report)  # where results/ would be
-    monkeypatch.setattr(run_phase1, "load_api_key", lambda: "key")
+    monkeypatch.setattr(run_phase1, "connect_gemini", lambda: "api-key")
     code = run_phase1.main(
         ["run_phase1.py", str(REPO_ROOT / "evals" / "brief_25m.md"), "--plain", "--trace-html", str(tmp_path / "t.html")]
     )

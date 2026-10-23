@@ -89,6 +89,45 @@ def load_api_key() -> str:
     return key
 
 
+_PLATFORM_FLAGS = ("GOOGLE_GENAI_USE_ENTERPRISE", "GOOGLE_GENAI_USE_VERTEXAI")
+
+
+def on_agent_platform() -> bool:
+    """True when Gemini is to be reached through Agent Platform, not an API key.
+
+    Agent Platform (formerly Vertex AI) sets GOOGLE_GENAI_USE_ENTERPRISE, the
+    project and the region in the container it runs the agent in, and signs
+    every call with the agent's own service account: there is no key to load.
+    """
+    flagged = any(
+        os.getenv(name, "").strip().lower() in ("1", "true", "yes") for name in _PLATFORM_FLAGS
+    )
+    return flagged and bool(os.getenv("GOOGLE_CLOUD_PROJECT"))
+
+
+def connect_gemini(strict: bool = True) -> str:
+    """Point the Gemini client at Agent Platform or at the API key, and say which.
+
+    Returns "agent-platform" or "api-key". With strict=False a missing key is
+    not an error and "none" is returned: importing the deployed agent must not
+    fail on a machine with no .env, such as the one running the offline tests.
+    """
+    load_dotenv(REPO_ROOT / ".env")
+    if on_agent_platform():
+        return "agent-platform"
+    try:
+        load_api_key()
+    except RuntimeError:
+        if strict:
+            raise RuntimeError(
+                "No way to reach Gemini: set GEMINI_API_KEY in .env, or set "
+                "GOOGLE_GENAI_USE_ENTERPRISE=1 with GOOGLE_CLOUD_PROJECT and "
+                "GOOGLE_CLOUD_LOCATION to use Agent Platform."
+            ) from None
+        return "none"
+    return "api-key"
+
+
 def generation(model: str) -> str:
     """The version in a Gemini model name: "gemini-3.5-flash-lite" -> "3.5"."""
     match = re.match(r"gemini-(\d+(?:\.\d+)?)", model)

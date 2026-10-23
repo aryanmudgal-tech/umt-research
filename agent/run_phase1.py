@@ -26,7 +26,7 @@ from google.adk.runners import InMemoryRunner  # noqa: E402
 from google.genai import types  # noqa: E402
 
 from agent import config  # noqa: E402
-from agent.config import ORCHESTRATOR_MODELS, load_api_key, retryable_error, verifier_roster, within_budget  # noqa: E402
+from agent.config import ORCHESTRATOR_MODELS, connect_gemini, retryable_error, verifier_roster, within_budget  # noqa: E402
 from agent.gates import (  # noqa: E402
     check_status,
     detect_ss_udl,
@@ -541,7 +541,7 @@ def main(argv) -> int:
     args = build_parser().parse_args(list(argv)[1:])
     brief_path = Path(args.brief)
     brief_text = brief_path.read_text()
-    load_api_key()
+    connect_gemini()
 
     html_path = None if args.no_html else Path(args.trace_html)
     # the raw dump is the HTML trace's sibling, so redirecting one moves both
