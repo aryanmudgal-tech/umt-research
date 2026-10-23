@@ -19,3 +19,7 @@ results/
 
 # Web UI runs stored locally during development
 web_runs/
+
+# Agent Platform deploy tooling and its leftovers
+.venv-deploy/
+beam_agent_tmp*/
