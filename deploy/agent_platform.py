@@ -97,6 +97,9 @@ def main(argv=None) -> int:
         region=args.region,
         agent_engine_id=args.update,
         adk_version=ADK_VERSION,
+        # passed explicitly: left unset, ADK names the agent after its folder
+        display_name=config["display_name"],
+        description=config["description"],
     )
     return 0
 

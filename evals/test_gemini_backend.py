@@ -88,3 +88,18 @@ def test_with_neither_the_error_names_both_ways(monkeypatch):
 
 def test_importing_the_deployed_agent_never_needs_a_key(monkeypatch):
     assert config.connect_gemini(strict=False) == "none"
+
+
+def test_on_the_platform_the_models_are_called_on_the_global_endpoint(monkeypatch):
+    platform(monkeypatch)
+    model = config.gemini_model("gemini-3.8-flash")
+    assert model.client_kwargs == {"location": "global"}
+    assert model.retry_options is config.RETRY_OPTIONS
+    # the agent's own region, where its sessions live, is left alone
+    assert config.os.environ["GOOGLE_CLOUD_LOCATION"] == "us-central1"
+
+
+def test_with_the_key_no_location_is_set(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "abc123")
+    config.connect_gemini()
+    assert config.gemini_model("gemini-3.8-flash").client_kwargs is None

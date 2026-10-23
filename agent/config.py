@@ -65,9 +65,21 @@ ORCHESTRATOR_BUDGET_S = 150
 VERIFIER_BUDGET_S = 240
 
 
+# On Agent Platform the models answer on the "global" endpoint, not in the region
+# the agent runs and keeps its sessions in: in the professor's project every
+# model above returned 404 in us-central1 and answered on global (2026-10-23),
+# although the us-central1 catalogue lists them all.
+MODEL_LOCATION = "global"
+
+
 def gemini_model(name: str) -> Gemini:
-    """A Gemini model handle that retries transient overload on its own."""
-    return Gemini(model=name, retry_options=RETRY_OPTIONS)
+    """A Gemini model handle that retries transient overload on its own.
+
+    On Agent Platform its calls go to MODEL_LOCATION; elsewhere the API key's
+    endpoint, which has no regions, is used as before.
+    """
+    extra = {"client_kwargs": {"location": MODEL_LOCATION}} if on_agent_platform() else {}
+    return Gemini(model=name, retry_options=RETRY_OPTIONS, **extra)
 
 
 async def within_budget(coroutine, budget_s: float, name: str):
